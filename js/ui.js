@@ -351,27 +351,55 @@ export class UI {
   }
 
   // ---------- construction panel ----------
+  // A small stage card (collapsible) plus a separate compact gamepad for the excavator / crane,
+  // so the building site stays visible on tablets and phones.
   buildPanel(info) {
     const el = $('buildPanel');
-    if (!info) { el.innerHTML = ''; return; }
+    if (!info) { el.innerHTML = ''; this.buildPad(null); return; }
     const g = this.game;
-    let h = `<div class="bp-head"><span class="bp-stage">${info.building || 'Plot'} · Plot ${info.plot + 1} · Stage ${Math.min(info.stage + 1, info.total)}/${info.total}</span><button class="btn sm" id="bpExit">Exit site</button></div>`;
+    if (this.prefs.bpMini === undefined) this.prefs.bpMini = innerWidth < 1000 || innerHeight < 700;
+    const mini = this.prefs.bpMini;
+    el.classList.toggle('mini', mini);
+    let h = `<div class="bp-head"><span class="bp-stage">${info.building || 'Plot'} · Stage ${Math.min(info.stage + 1, info.total)}/${info.total}</span>
+      <button class="btn sm" id="bpMini" aria-expanded="${!mini}" aria-label="${mini ? 'Show more' : 'Show less'}">${mini ? '▴' : '▾'}</button><button class="btn sm" id="bpExit">Exit</button></div>`;
     h += `<div class="bp-name">${info.name}</div>`;
     h += `<div class="bp-steps">${STAGES.map((st, i) => `<span class="${i < info.stage ? 'done' : i === info.stage ? 'now' : ''}" title="${st.name}"></span>`).join('')}</div>`;
     if (info.needs.length) h += `<div class="bp-needs">${info.needs.map((n) => `<span class="need ${n.have >= n.need ? 'ok' : 'miss'}"><span class="sw" style="background:${n.color}"></span>${n.name} ${Math.min(n.have, n.need)}/${n.need}</span>`).join('')}</div>`;
     h += `<p class="bp-hint">${info.hint}</p>`;
     if (info.palette) h += `<div class="palette">${info.palette.map((c) => `<button class="swatch ${c.hex === info.paintColor ? 'active' : ''}" style="background:${c.hex}" data-b="color:${c.hex}" aria-label="${c.name}" title="${c.name}"></button>`).join('')}</div>`;
     if (info.parts) h += `<div class="row">${info.parts.map((p) => `<button class="btn ${info.selected === p.id ? 'active' : ''}" data-b="part:${p.id}">${p.label}</button>`).join('')}</div>`;
-    if (info.pad === 'excavator') h += padHtml([['swingL', 'Swing ◀', 'A'], ['swingR', 'Swing ▶', 'D'], ['boomUp', 'Boom ▲', 'W'], ['boomDown', 'Boom ▼', 'S'], ['stickOut', 'Arm out', 'Q'], ['stickIn', 'Arm in', 'E'], ['curl', 'Dig / curl', 'R'], ['dump', 'Dump', 'F']]);
-    if (info.pad === 'crane') h += padHtml([['slewL', 'Turn ◀', 'A'], ['slewR', 'Turn ▶', 'D'], ['out', 'Trolley out', 'W'], ['in', 'Trolley in', 'S'], ['up', 'Hook ▲', 'Q'], ['down', 'Hook ▼', 'E']]) + '<button class="btn primary wide" data-b="grab">Grab / Release (Space)</button>';
-    h += `<div class="row">${info.buttons.map((b) => `<button class="btn ${b.hold ? 'primary' : ''}" data-b="${b.id}" ${b.hold ? 'data-hold="1"' : ''}>${b.label}</button>`).join('')}</div>`;
+    if (info.buttons.length) h += `<div class="row bp-acts">${info.buttons.map((b) => `<button class="btn ${b.hold ? 'primary' : ''}" data-b="${b.id}" ${b.hold ? 'data-hold="1"' : ''}>${b.label}</button>`).join('')}</div>`;
     el.innerHTML = h;
     $('bpExit').onclick = () => g.exitBuild();
+    $('bpMini').onclick = () => { this.prefs.bpMini = !mini; this.savePrefs(); this.buildPanel(info); };
     el.querySelectorAll('[data-b]').forEach((b) => {
       if (b.dataset.hold) this.hold(b, (v) => g.construction.onButton(b.dataset.b, v));
       else b.onclick = () => g.construction.onButton(b.dataset.b, true);
     });
-    el.querySelectorAll('[data-pad]').forEach((b) => this.hold(b, (v) => g.construction.setPad(b.dataset.pad, v)));
+    this.buildPad(info.pad);
+  }
+
+  // compact gamepad in the bottom-right corner; rebuilt only when the machine changes so held buttons keep working
+  buildPad(kind) {
+    let pad = $('buildPad');
+    if (!pad) { pad = document.createElement('div'); pad.id = 'buildPad'; $('hud').appendChild(pad); }
+    if (!kind) { pad.hidden = true; pad.innerHTML = ''; this._padKind = null; return; }
+    pad.hidden = false;
+    if (this._padKind === kind) return;
+    this._padKind = kind;
+    const g = this.game;
+    const B = (id, icon, label, key) => `<button class="padbtn" data-pad="${id}" aria-label="${label} (key ${key})"><b>${icon}</b><small>${label}</small></button>`;
+    pad.innerHTML = kind === 'excavator'
+      ? `<div class="pad-title">Excavator</div><div class="padgrid">
+          ${B('swingL', '⟲', 'Swing', 'A')}${B('boomUp', '▲', 'Boom up', 'W')}${B('stickOut', '↗', 'Arm out', 'Q')}${B('curl', '⤵', 'Dig', 'R')}
+          ${B('swingR', '⟳', 'Swing', 'D')}${B('boomDown', '▼', 'Boom down', 'S')}${B('stickIn', '↙', 'Arm in', 'E')}${B('dump', '⤴', 'Dump', 'F')}</div>`
+      : `<div class="pad-title">Crane</div><div class="padgrid">
+          ${B('slewL', '⟲', 'Turn', 'A')}${B('out', '→', 'Out', 'W')}${B('up', '▲', 'Hook up', 'Q')}
+          ${B('slewR', '⟳', 'Turn', 'D')}${B('in', '←', 'In', 'S')}${B('down', '▼', 'Hook down', 'E')}</div>
+          <button class="btn primary grabbtn" data-grab="1">✋ Grab / Release</button>`;
+    pad.querySelectorAll('[data-pad]').forEach((b) => this.hold(b, (v) => g.construction.setPad(b.dataset.pad, v)));
+    const grab = pad.querySelector('[data-grab]');
+    if (grab) grab.onclick = () => g.construction.onButton('grab', true);
   }
 }
 

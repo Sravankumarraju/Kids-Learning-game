@@ -666,8 +666,8 @@ class Game {
       const ps = s.plots[i];
       o.title = `Plot ${i + 1}: ${ps.stage < STAGES.length ? STAGES[ps.stage].name : 'complete'}`;
       o.sub = `Stage ${Math.min(ps.stage + 1, STAGES.length)} of ${STAGES.length}`;
-      const hint = document.querySelector('.bp-hint')?.textContent || '';
-      guide = ps.stage >= STAGES.length ? `It looks wonderful, ${name}! Tap Home to build or drive something else.` : `${name}: ${hint}`;
+      // the stage card already shows the hint, so the guide only speaks up when the building is finished
+      guide = ps.stage >= STAGES.length ? `It looks wonderful, ${name}! Tap Home to build or drive something else.` : '';
     }
     this.guide = { who, text: guide };
     this.objective = o;

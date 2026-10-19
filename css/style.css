@@ -363,3 +363,39 @@ body.scenic #hud { display: none; }
   .meter small { grid-column: 1; }
   #learnOffer { bottom: calc(210px + var(--safe-b)); }
 }
+
+/* ---------- compact building controls (tablet / phone friendly) ---------- */
+#buildPanel { width: min(340px, calc(100vw - 24px)); padding: 8px 10px; max-height: 46vh; }
+#buildPanel .bp-head { gap: 6px; }
+#buildPanel .bp-stage { margin-right: auto; font-size: 11px; }
+#buildPanel .bp-name { font-size: 15.5px; margin: 2px 0 4px; }
+#buildPanel .bp-steps { margin-bottom: 6px; }
+#buildPanel .bp-steps span { height: 5px; }
+#buildPanel .bp-hint { font-size: 13px; margin: 4px 0 6px; line-height: 1.3; }
+#buildPanel .btn { min-height: 34px; padding: 5px 11px; font-size: 13.5px; }
+#buildPanel .btn.sm { min-height: 28px; padding: 2px 9px; }
+#buildPanel .row { margin-top: 4px; gap: 6px; justify-content: flex-start; }
+#buildPanel .swatch { width: 32px; height: 32px; }
+#buildPanel.mini .bp-hint, #buildPanel.mini .bp-steps, #buildPanel.mini .bp-needs { display: none; }
+#buildPanel.mini .bp-name { font-size: 14px; margin-bottom: 2px; }
+#buildPad { position: absolute; right: 12px; bottom: calc(12px + var(--safe-b)); background: var(--glass-strong); border: 1px solid var(--line); border-radius: 16px; padding: 6px 8px 8px; pointer-events: auto; }
+#buildPad .pad-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 2px 4px; }
+#buildPad .padgrid { display: grid; grid-template-columns: repeat(4, 58px); gap: 6px; }
+#buildPad .padgrid:has(> :nth-child(6):last-child) { grid-template-columns: repeat(3, 58px); }
+#buildPad .padbtn { width: 58px; height: 54px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.12); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 0; touch-action: none; user-select: none; -webkit-user-select: none; }
+#buildPad .padbtn b { font-size: 19px; line-height: 1; }
+#buildPad .padbtn small { font-size: 9.5px; color: var(--muted); line-height: 1.1; }
+#buildPad .padbtn.down { background: rgba(247, 200, 30, 0.85); }
+#buildPad .padbtn.down small, #buildPad .padbtn.down b { color: #1b1b1b; }
+#buildPad .grabbtn { width: 100%; margin-top: 6px; min-height: 40px; }
+@media (max-width: 720px), (max-height: 560px) {
+  #buildPanel { width: min(250px, calc(100vw - 230px)); max-height: 40vh; }
+  #buildPad .padgrid { grid-template-columns: repeat(4, 46px); gap: 4px; }
+  #buildPad .padgrid:has(> :nth-child(6):last-child) { grid-template-columns: repeat(3, 46px); }
+  #buildPad .padbtn { width: 46px; height: 44px; }
+  #buildPad .padbtn b { font-size: 16px; }
+  #buildPad .padbtn small { font-size: 8.5px; }
+}
+@media (max-width: 480px) {
+  #buildPanel { width: calc(100vw - 24px); bottom: auto; top: calc(110px + var(--safe-t)); }
+}
