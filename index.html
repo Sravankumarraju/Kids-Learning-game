@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#1d2b33">
+  <title>Build My Town: Indian Railway Adventure</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect x=%224%22 y=%228%22 width=%2224%22 height=%2214%22 rx=%223%22 fill=%22%239c2219%22/%3E%3Crect x=%224%22 y=%2214%22 width=%2224%22 height=%222%22 fill=%22%23efe2bf%22/%3E%3Ccircle cx=%2210%22 cy=%2224%22 r=%223%22 fill=%22%23333%22/%3E%3Ccircle cx=%2222%22 cy=%2224%22 r=%223%22 fill=%22%23333%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body data-mode="title">
+  <canvas id="c" aria-label="3D game view"></canvas>
+  <div id="fade"></div>
+
+  <div id="hud" hidden>
+    <div id="topLeft">
+      <div id="objective" class="chip" aria-live="polite">
+        <div id="objTitle" class="obj-title"></div>
+        <div id="objSub" class="obj-sub"></div>
+      </div>
+      <div id="guide" class="guide" aria-live="polite">
+        <div class="avatar" aria-hidden="true">👷</div>
+        <div class="gtext"><b id="guideWho">Station Master</b><span id="guideText"></span></div>
+        <button id="guideHide" class="ghide" aria-label="Hide the guide">✕</button>
+      </div>
+      <button id="guideShow" class="chip gshow" hidden>👷 Guide</button>
+    </div>
+    <div id="topRight">
+      <div class="chip coins" title="Coins"><span class="coin" aria-hidden="true"></span><span id="coinVal">0</span><span class="sr">coins</span></div>
+      <button id="btnHome" class="iconbtn" aria-label="Home menu: choose train, vehicle or building" title="Home menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 8h-3v9h-5v-6h-2v6H6v-9H3z"/></svg>
+      </button>
+      <button id="btnCam" class="iconbtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Camera view (C)" title="Camera view (C)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1zm8 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/></svg>
+      </button>
+      <button id="btnPanels" class="iconbtn" aria-expanded="false" aria-controls="dock" aria-label="Show or hide panels (O)" title="Missions, map, garage (O)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+      </button>
+      <button id="btnScenic" class="iconbtn" aria-label="Scenic mode: hide controls (U)" title="Scenic mode (U)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19l6-8 4 5 3-3 5 6zM17 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>
+      </button>
+    </div>
+    <ul id="camMenu" role="listbox" aria-label="Camera views" hidden></ul>
+
+    <aside id="dock" hidden aria-label="Panels">
+      <nav class="tabs" role="tablist">
+        <button data-tab="missions" role="tab">Missions</button>
+        <button data-tab="map" role="tab">Map</button>
+        <button data-tab="garage" role="tab">Garage</button>
+        <button data-tab="camera" role="tab">Camera</button>
+        <button data-tab="settings" role="tab">Settings</button>
+        <button id="dockClose" class="close" aria-label="Minimise panels">✕</button>
+      </nav>
+      <section id="panelBody" role="tabpanel"></section>
+    </aside>
+
+    <div id="trainCtl" class="ctl">
+      <div class="cluster left">
+        <div class="speedo" aria-label="Speedometer">
+          <svg viewBox="0 0 100 70" aria-hidden="true"><path d="M10 62 A42 42 0 1 1 90 62" class="track"/><path id="speedArc" d="M10 62 A42 42 0 1 1 90 62" class="val" stroke-dasharray="0 200"/></svg>
+          <div class="num"><span id="speedVal">0</span><small>km/h</small></div>
+        </div>
+        <button id="dirBtn" class="pill" aria-label="Forward or reverse (R)" title="Forward / Reverse (R) – only when stopped">FWD</button>
+        <button id="assistBtn" class="pill" aria-pressed="false" title="Driving assist (P)">Assist</button>
+      </div>
+      <div class="cluster right">
+        <button id="hornBtn" class="round" aria-label="Horn (H)" title="Horn (H)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 4V6L7 10zm13 2a4 4 0 0 0-2-3.5v7A4 4 0 0 0 16 12zm-2-8v2a7 7 0 0 1 0 12v2a9 9 0 0 0 0-16z"/></svg>
+        </button>
+        <button id="lightBtn" class="round" aria-pressed="true" aria-label="Headlights (L)" title="Headlights (L)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6a6 6 0 0 1 0 12H11V6zm-6 1h2v2H8zm-5 0h4v2H3zm0 4h4v2H3zm0 4h4v2H3z"/></svg>
+        </button>
+        <div class="throttle-box">
+          <input id="throttle" type="range" min="0" max="100" value="0" aria-label="Throttle">
+          <span id="thrVal">0%</span>
+        </div>
+        <button id="brakeBtn" class="brake" aria-label="Brake (hold Space)">BRAKE</button>
+      </div>
+    </div>
+
+    <div id="carCtl" class="ctl" hidden>
+      <div class="cluster left">
+        <button id="vLeft" class="round big" aria-label="Steer left">◀</button>
+        <button id="vRight" class="round big" aria-label="Steer right">▶</button>
+        <div class="vspeed"><span id="vSpeed">0</span><small>km/h</small></div>
+      </div>
+      <div class="cluster right">
+        <button id="vRecover" class="pill" title="Recover vehicle (R)">Recover</button>
+        <button id="vHorn" class="round" aria-label="Horn (H)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 4V6L7 10zm13 2a4 4 0 0 0-2-3.5v7A4 4 0 0 0 16 12z"/></svg>
+        </button>
+        <button id="vRev" class="pedal" aria-label="Brake / reverse">BRAKE<br><small>REV</small></button>
+        <button id="vGas" class="pedal gas" aria-label="Accelerate">GO</button>
+      </div>
+    </div>
+
+    <div id="buildPanel" hidden></div>
+    <button id="actionBtn" hidden></button>
+    <div id="toasts" aria-live="polite"></div>
+  </div>
+
+  <button id="scenicRestore" hidden aria-label="Show controls again">Show controls</button>
+
+  <div id="title">
+    <div class="title-card">
+      <h1>Build My Town</h1>
+      <h2>Indian Railway Adventure</h2>
+      <p class="tag">Drive a freight train through the countryside, bring materials to Mitrapur and build houses for the town.</p>
+      <div id="loadBar"><div id="loadFill"></div></div>
+      <p id="loadMsg" class="small">Loading…</p>
+      <div id="titleBtns" hidden>
+        <button class="btn primary big" id="btnContinue" hidden>Continue game</button>
+        <button class="btn big" id="btnNew">New game</button>
+      </div>
+      <p class="small fine">Fictional stations and route, inspired by Indian railways. Sound starts when you press a button.</p>
+    </div>
+  </div>
+  <div id="overlay" hidden></div>
+  <div id="learn" hidden></div>
+  <div id="modal" hidden></div>
+  <noscript>This game needs JavaScript.</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
