@@ -3,6 +3,11 @@ import * as THREE from 'three';
 import { part, mat, mergeGeos, canvasTexture, rng } from './util.js';
 import { M, box, cyl, cargoGeometry } from './models.js';
 import { MATERIALS, CARGO } from './data.js';
+import { PROJECTS } from './buildgeo.js';
+import { Assets } from './assets.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+export const PLOT_SPOTS = [[-205, 0], [-115, 0], [115, 0], [-55, 0], [55, 0], [-160, 1], [-85, 1], [85, 1], [175, 1], [-260, 0]];
 
 export class Town {
   constructor(world) {
@@ -16,10 +21,11 @@ export class Town {
     this.L = this.track.L;
     this.crossingS = [480, Math.round(0.105 * this.L), Math.round(0.70 * this.L)];
     world.crossingS = this.crossingS;
-    this.plots = [-205, -115, 115].map((dx, i) => {
-      const [x, z] = P(dx, -6);
+    // ten building plots along the main street: south side faces +z, north side faces -z
+    this.plots = PLOT_SPOTS.map(([dx, north], i) => {
+      const [x, z] = P(dx, north ? 42 : -6);
       const [ux, uz] = P(dx, 20);
-      return { i, x, z, y: this.terrain.townY, w: 24, d: 22, unload: { x: ux, z: uz, r: 9 } };
+      return { i, x, z, y: this.terrain.townY, w: 24, d: 22, yaw: north ? Math.PI : 0, unload: { x: ux, z: uz, r: 9 } };
     });
     const [wx, wz] = P(150, 205);
     this.warehouse = { x: wx, z: wz };
@@ -127,7 +133,7 @@ export class Town {
       house(dx, -150, Math.PI);
       house(dx, -110, 0);
       if (!(dx > -185 && dx < -115) && !(dx > 120 && dx < 180)) house(dx, 125, Math.PI);
-      if (!(dx > -235 && dx < -175) && !(dx > -140 && dx < -85) && !(dx > 95 && dx < 225)) house(dx, 60, 0);
+      if (!PLOT_SPOTS.some(([px, n]) => n && Math.abs(px - dx) < 20) && !(dx > 140 && dx < 160)) house(dx, 62, 0);
     }
     for (let dz = -100; dz <= 120; dz += 24) {
       if (dz > -40 && dz < 45) continue;
@@ -144,6 +150,7 @@ export class Town {
         w.addCircleObstacle(x, z, 0.6, y0 + 7);
       }
     }
+    this.buildFootpaths(sc, r);
     sc.temple(...P(-235, -205), 0, 1.2);
     // water tank
     {
@@ -274,16 +281,80 @@ export class Town {
     w.addTile(s, mx, mz);
   }
 
+  // raised paved footpaths with kerbs along every town street, lined with shade trees
+  buildFootpaths(sc, r) {
+    const P = this.P, w = this.world, y0 = this.terrain.townY;
+    const streets = [[[-300, 20], [300, 20]], [[-290, 150], [290, 150]], [[-290, -130], [290, -130]], [[0, 232], [0, -250]], [[-290, 150], [-290, -130]], [[290, 150], [290, -130]]];
+    const distTo = (x, z, [ax, az], [bx, bz]) => {
+      const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / ((bx - ax) ** 2 + (bz - az) ** 2)));
+      return Math.hypot(x - (ax + (bx - ax) * t), z - (az + (bz - az) * t));
+    };
+    const pave = Assets.material('paving', { repeat: [0.5, 0.5] });
+    const kerb = new THREE.MeshStandardMaterial({ color: 0xd8d4cc, roughness: 0.8 });
+    const parts = [], kerbs = [];
+    for (const st of streets) {
+      const [a, b] = st;
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const dx = (b[0] - a[0]) / len, dz = (b[1] - a[1]) / len;
+      const yaw = Math.atan2(dx, dz);
+      // footpath centre 4.8 m to each side of the road; side vector is (dz, -dx)
+      const at = (t, off, side) => [a[0] + dx * t + dz * side * off, a[1] + dz * t - dx * side * off];
+      const blockedAt = (x, z) => streets.some((o) => o !== st && distTo(x, z, o[0], o[1]) < 9);
+      for (const side of [-1, 1]) {
+        let run = null;
+        const flush = (t1) => {
+          if (run != null && t1 - run >= 3) {
+            const tm = (run + t1) / 2, L = t1 - run;
+            const [cx, cz] = at(tm, 4.8, side);
+            const g = new THREE.BoxGeometry(2.2, 0.16, L);
+            const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2.2, uv.getY(i) * L);
+            g.rotateY(yaw); g.translate(cx, 0.08, cz);
+            parts.push(g);
+            const k = new THREE.BoxGeometry(0.18, 0.2, L);
+            k.translate(-side * 1.1, 0.1, 0);
+            k.rotateY(yaw); k.translate(cx, 0, cz);
+            kerbs.push(k);
+          }
+          run = null;
+        };
+        for (let t = 0; t <= len; t += 2) {
+          const [x, z] = at(t, 4.8, side);
+          const blocked = blockedAt(x, z);
+          if (!blocked && run == null) run = t;
+          if (blocked && run != null) flush(t);
+          if (!blocked && t % 18 === 8) {
+            const [tx, tz] = at(t, 6.8, side);
+            const [wx, wz] = P(tx, tz);
+            if (!sc.reserved.some((q) => Math.hypot(wx - q.x, wz - q.z) < q.r + 2) && !blockedAt(tx, tz)) {
+              sc.add('round', wx, wz, r() * 6, 0.75 + r() * 0.3, new THREE.Color().setHSL(0.27 + r() * 0.04, 0.45, 0.75 + r() * 0.15, THREE.SRGBColorSpace));
+              w.addCircleObstacle(wx, wz, 0.5, y0 + 7);
+            }
+          }
+        }
+        flush(len);
+      }
+    }
+    const tc = this.tc;
+    for (const [list, m] of [[parts, pave], [kerbs, kerb]]) {
+      if (!list.length) continue;
+      const mesh = new THREE.Mesh(mergeGeometries(list), m);
+      mesh.position.set(tc.x, y0, tc.z);
+      mesh.receiveShadow = true; mesh.castShadow = false;
+      w.group.add(mesh);
+    }
+  }
+
   buildPlotMarkers() {
     const w = this.world, y0 = this.terrain.townY;
     this.plotMarkers = this.plots.map((p) => {
       const g = new THREE.Group();
       g.position.set(p.x, y0, p.z);
+      g.rotation.y = p.yaw;
       const l = [];
       for (const [x, z] of [[-12, -11], [12, -11], [-12, 11], [12, 11]]) box(l, '#e85d2a', 0.15, 1.0, 0.15, x, 0.5, z);
       const pegs = new THREE.Mesh(mergeGeos(l), M.vc);
       g.add(pegs);
-      const sign = this.sign(`PLOT ${p.i + 1}`, `भूखंड ${p.i + 1}`, 3.2, 1.1, '#7a4a2a');
+      const sign = this.sign(`${p.i + 1}. ${PROJECTS[p.i].name.toUpperCase()}`, `भूखंड ${p.i + 1}`, 4.6, 1.2, '#7a4a2a');
       sign.position.set(-9, 1.9, 11.4);
       g.add(sign);
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.6, 6), new THREE.MeshStandardMaterial({ color: 0x444444 }));
@@ -295,7 +366,7 @@ export class Town {
       for (let i = 0; i <= 24; i += 2) { box(fl, '#9a8a6a', 0.12, 1.2, 0.12, -12 + i, 0.6, 11); box(fl, '#9a8a6a', 0.12, 1.2, 0.12, -12 + i, 0.6, -11); }
       box(fl, '#9a8a6a', 24, 0.08, 0.08, 0, 1.0, 11); box(fl, '#9a8a6a', 24, 0.08, 0.08, 0, 1.0, -11);
       lock.add(new THREE.Mesh(mergeGeos(fl), M.vc));
-      const ls = this.sign('LOCKED', 'Finish the previous house', 4.5, 1.2, '#8a2a22');
+      const ls = this.sign('COMING SOON', 'Finish the previous building', 5, 1.2, '#8a2a22');
       ls.position.set(0, 2.2, 11.2);
       lock.add(ls);
       g.add(lock);

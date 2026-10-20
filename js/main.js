@@ -9,11 +9,17 @@ import { Train } from './train.js';
 import { Vehicle } from './vehicles.js';
 import { CameraRig, TRAIN_VIEWS, VEHICLE_VIEWS } from './cameras.js';
 import { Construction } from './construction.js';
+import { Traffic } from './traffic.js';
+import { Challenges } from './challenges.js';
+import { PROJECTS } from './buildgeo.js';
 import { GameAudio } from './audio.js';
 import { UI, goods } from './ui.js';
-import { makeCar, makeTruck, makeSUV, makeAuto, makeTractor, setTruckCargo, setWagonCargo } from './models.js';
+import { setTruckCargo, setWagonCargo } from './models.js';
+import { makeCar, makeTruck, makeSUV, makeAuto, makeTractor } from './cars.js';
 import { Passengers } from './passengers.js';
 import { Learn } from './learn.js';
+import { Assets } from './assets.js';
+import { DayNight, TIME_MODES } from './daynight.js';
 import * as L from './logic.js';
 import * as DATA from './data.js';
 import { CARGO, STAGES, MATERIALS, VEHICLE_COLORS } from './data.js';
@@ -51,6 +57,7 @@ class Game {
     this.time = 0;
     this.saveTimer = 0;
     this.data = DATA;
+    this.timeModes = TIME_MODES;
     this.vehicles = {};
     this.guide = null;
   }
@@ -65,9 +72,16 @@ class Game {
     const want = colorIdx ?? v?.colorIdx ?? (kind === 'truck' ? -1 : 1);
     if (v && v.colorIdx === want) return v;
     let pos = null;
-    if (v) { pos = { x: v.x, z: v.z, yaw: v.yaw }; this.scene.remove(v.obj); }
+    if (v) {
+      pos = { x: v.x, z: v.z, yaw: v.yaw };
+      this.scene.remove(v.obj);
+      const old = Object.values(v.obj.userData.lamps || {});
+      this.daynight.lamps = this.daynight.lamps.filter((l) => !old.includes(l.m));
+    }
     const hex = want < 0 ? undefined : VEHICLE_COLORS[want]?.hex;
     v = new Vehicle(kind, MAKERS[kind](hex), this.world);
+    const lamps = v.obj.userData.lamps;
+    if (lamps) { this.daynight.addLamp(lamps.head, 3); this.daynight.addLamp(lamps.tail, 2); this.daynight.addLamp(lamps.amber, 1.5); }
     v.colorIdx = want;
     v.onBump = () => this.audio.play('bump');
     v.obj.visible = true;
@@ -102,10 +116,15 @@ class Game {
     renderer.toneMappingExposure = 1.05;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    Assets.init(renderer, this.settings.quality);
     const scene = this.scene = new THREE.Scene();
     const camera = this.camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 6000);
     this.buildSky();
-    this.progress(0.05, 'Laying the railway line…');
+    this.progress(0.03, 'Lighting up the sky…');
+    this.daynight = new DayNight(this);
+    this.daynight.mode = this.settings.timeMode || 'cycle';
+    await this.daynight.load();
+    this.progress(0.08, 'Laying the railway line…');
     await nextFrame();
     this.track = new Track();
     this.progress(0.15, 'Shaping hills, fields and the river…');
@@ -136,6 +155,9 @@ class Game {
     this.state = L.newState();
     this.ui = new UI(this);
     this.construction = new Construction(this);
+    this.traffic = new Traffic(this);
+    this.challenges = new Challenges(this);
+    this.traffic.build({ low: 5, medium: 9, high: 13 }[this.settings.quality] || 9);
     this.passengers = new Passengers(this);
     this.learn = new Learn(this);
     this.applySettings({}, false);
@@ -191,8 +213,8 @@ class Game {
     this.sky = new THREE.Mesh(geo, mat);
     this.sky.frustumCulled = false;
     this.scene.add(this.sky);
-    this.scene.fog = new THREE.Fog(0xc6dbe6, 300, 2400);
-    const hemi = new THREE.HemisphereLight(0xd6e8ff, 0x6a5a3a, 1.25);
+    this.scene.fog = new THREE.Fog(0xb9c8d6, 400, 3200);
+    const hemi = this.hemi = new THREE.HemisphereLight(0xd6e8ff, 0x6a5a3a, 1.25);
     this.scene.add(hemi);
     const sun = this.sun = new THREE.DirectionalLight(0xfff0d4, 2.6);
     this.sunDir = new THREE.Vector3(0.45, 0.62, 0.35).normalize();
@@ -231,7 +253,7 @@ class Game {
     const sc = this.sun.shadow.camera;
     sc.left = -q.shadowRange; sc.right = q.shadowRange; sc.top = q.shadowRange; sc.bottom = -q.shadowRange; sc.near = 10; sc.far = 700;
     sc.updateProjectionMatrix();
-    this.scene.fog.far = q.fog; this.scene.fog.near = q.fog * 0.15;
+    this.scene.fog.far = q.fog * 1.4; this.scene.fog.near = q.fog * 0.2;
     this.drawDist = q.draw;
     this.scenery.setDensity(q.density);
     this.scene.traverse((o) => { if (o.material && o.material.needsUpdate !== undefined && 'fog' in o.material) o.material.needsUpdate = true; });
@@ -363,7 +385,6 @@ class Game {
     this.ui.setMode('build');
     this.construction.enter(i);
     this.audio.play('click');
-    if (this.state.plots[i].stage === 0) setTimeout(() => this.learn.offer(['shapes', 'colour'], 'Before we build:'), 2500);
   }
   exitBuild() {
     this.construction.exit();
@@ -391,6 +412,7 @@ class Game {
   }
   chooseTrain(choice) {
     const s = this.state;
+    this.challenges.stop();
     s.choice.train = choice;
     this.train.speed = 0;
     this.train.setConsist(choice);
@@ -417,9 +439,10 @@ class Game {
   }
   chooseBuild(i, design) {
     const p = this.state.plots[i];
-    if (!p || p.done) return;
-    if (p.stage === 0 && !(p.progress && Object.keys(p.progress).length)) p.design = design;
-    else if (!p.design) p.design = design;
+    this.challenges.stop();
+    if (!p || p.done || !p.unlocked) return;
+    p.design = { ...(p.design || {}), ...design };
+    p.colors = { ...(p.colors || {}), walls: design.color };
     if (this.mode === 'build') this.construction.exit();
     const from = this.isDrive() ? this.mode : 'home';
     this.construction.refreshAll();
@@ -500,12 +523,12 @@ class Game {
       const exp = this.town.expansions[this.state.housesBuilt - 1];
       const lines = [`+${res.coins} coins`, exp ? `The town grows: ${exp.label}!` : 'Mitrapur is thriving!'];
 
-      const tn = DATA.BUILDING_TYPES.find((b) => b.id === this.state.plots[i].design?.type)?.name || 'House';
+      const tn = PROJECTS[i].name;
       this.ui.celebrate(`${this.state.player.name ? this.state.player.name + ', your' : 'Your'} ${tn} is complete!`, lines);
       L.refreshBoard(this.state);
     } else {
       const used = Object.keys(res.consumed).map((k) => `${res.consumed[k]} ${CARGO[k].name.toLowerCase()}`).join(', ');
-      this.ui.toast(`${STAGES[res.stage].name}: done!${used ? ` Used ${used}.` : ''}`, 'good');
+      this.ui.toast(res.nextFloor ? `Floor ${this.state.plots[i].floor} is done — up to floor ${this.state.plots[i].floor + 1}!` : `${STAGES[res.stage].name}: done!${used ? ` Used ${used}.` : ''}`, 'good');
     }
   }
 
@@ -664,10 +687,17 @@ class Game {
       this.world.setStopZone(null);
       const i = this.construction.session?.i ?? 0;
       const ps = s.plots[i];
-      o.title = `Plot ${i + 1}: ${ps.stage < STAGES.length ? STAGES[ps.stage].name : 'complete'}`;
-      o.sub = `Stage ${Math.min(ps.stage + 1, STAGES.length)} of ${STAGES.length}`;
+      o.title = `${PROJECTS[i].icon} ${PROJECTS[i].name}`;
+      o.sub = ps.stage < STAGES.length ? `Stage ${ps.stage + 1}/${STAGES.length}: ${STAGES[ps.stage].name}` : 'Complete!';
       // the stage card already shows the hint, so the guide only speaks up when the building is finished
       guide = ps.stage >= STAGES.length ? `It looks wonderful, ${name}! Tap Home to build or drive something else.` : '';
+    }
+    // a driving challenge takes over the goal and the guide arrow
+    const ch = this.isDrive() && this.challenges.objective();
+    if (ch) {
+      o.title = ch.title; o.sub = ch.sub; target = ch.target; o.ready = false;
+      guide = `Drive through the glowing ring number ${this.challenges.active.k + 1}, ${name}. Follow the yellow arrow!`;
+      if (action === 'Board the train' || (action && action.startsWith('Work on'))) action = null;
     }
     this.guide = { who, text: guide };
     this.objective = o;
@@ -765,7 +795,14 @@ class Game {
       const s = this.state, fare = this.train.def.fare || 10;
       const { boarded, alighted } = b.res;
       s.passenger.onboard = Math.max(0, s.passenger.onboard + boarded - alighted);
+      const lvBefore = DATA.PASSENGER_LEVELS.filter((l) => s.passenger.served >= l.need).length;
       s.passenger.served += alighted;
+      const lvAfter = DATA.PASSENGER_LEVELS.filter((l) => s.passenger.served >= l.need).length;
+      if (lvAfter > lvBefore) {
+        const lv = DATA.PASSENGER_LEVELS[lvAfter - 1];
+        s.coins += lv.bonus;
+        setTimeout(() => { this.audio.play('fanfare'); this.ui.celebrate(`Passenger level ${lv.level} reached!`, [`${s.passenger.served} happy passengers so far`, `+${lv.bonus} bonus coins`, lv.level < 10 ? `Next level at ${DATA.PASSENGER_LEVELS[lv.level].need} passengers` : 'Top level — you are a star driver!']); }, 900);
+      }
       s.passenger.lastStop = b.st.id;
       if (this.train.stopped) this.train.dir = 1; // ready to carry on forwards after backing up
       const earned = boarded * fare + alighted * 2;
@@ -856,22 +893,36 @@ class Game {
       } else if (this.isDrive(m)) {
         if (k === 'KeyR') this.recoverVehicle();
       } else if (m === 'build') {
-        if (k === 'Space') this.construction.onButton('grab', true);
+        if (k === 'Space' && !e.repeat) { e.preventDefault(); this.construction.onButton('primary', true); }
       }
     });
     addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
       if (e.code === 'KeyH') this.setHorn(false);
+      if (e.code === 'Space' && this.mode === 'build') this.construction.onButton('primary', false);
     });
     addEventListener('blur', () => { this.keys.clear(); this.setHorn(false); });
     // pointer: orbit + picking on the building site
     const cv = this.renderer.domElement;
     let down = null;
     const pointers = new Map();
-    cv.addEventListener('pointerdown', (e) => { pointers.set(e.pointerId, { x: e.clientX, y: e.clientY }); down = { x: e.clientX, y: e.clientY, moved: 0 }; cv.setPointerCapture(e.pointerId); });
+    const rayAt = (e) => {
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), this.camera);
+      return rc;
+    };
+    let painting = false;
+    cv.addEventListener('pointerdown', (e) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      down = { x: e.clientX, y: e.clientY, moved: 0 };
+      cv.setPointerCapture(e.pointerId);
+      // swiping on a wall paints it instead of turning the camera
+      painting = this.mode === 'build' && pointers.size === 1 && this.construction.pointerDown(rayAt(e));
+    });
     cv.addEventListener('pointermove', (e) => {
       const p = pointers.get(e.pointerId);
       if (!p || this.mode !== 'build') return;
+      if (painting) { this.construction.pointerMove(rayAt(e)); p.x = e.clientX; p.y = e.clientY; return; }
       const dx = e.clientX - p.x, dy = e.clientY - p.y;
       if (pointers.size === 2) {
         const pts = [...pointers.values()];
@@ -891,6 +942,7 @@ class Game {
     });
     const up = (e) => {
       pointers.delete(e.pointerId);
+      if (painting) { painting = false; this.construction.pointerUp(); down = null; return; }
       if (this.mode === 'build' && down && down.moved <= 6) {
         const ndc = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
         const rc = new THREE.Raycaster();
@@ -946,8 +998,10 @@ class Game {
     if (started) this.learn.tick(dt, !this.learn.isOpen() && !this.ui.overlayOpen());
     if (started) {
       this.updateBusy(dt);
-      if (this.vehicle) this.vehicle.update(simDt, vc, this.train.obstacles());
+      if (this.vehicle) this.vehicle.update(simDt, vc, [...this.train.obstacles(), ...this.traffic.obstacles()]);
       this.construction.update(dt, this.keys);
+      this.traffic.update(simDt, this.time);
+      this.challenges.update(simDt);
       this.computeObjective();
     }
     // guides
@@ -970,6 +1024,7 @@ class Game {
     this.scenery.updateLOD(this.camera.position);
     // billboards (stock labels face the camera)
     for (const k in this.town.stockPiles) this.town.stockPiles[k].lbl.lookAt(this.camera.position);
+    this.daynight.update(started ? dt * this.settings.timeScale : 0);
     // sun follows the view for crisp shadows
     const focus = this.rig.target;
     this.sun.target.position.copy(focus);

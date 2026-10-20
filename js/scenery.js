@@ -4,6 +4,11 @@ import * as THREE from 'three';
 import { part, mat, mergeGeos, canvasTexture, rng, smoothstep, fbm, clamp } from './util.js';
 import { M, box, cyl, beam, cargoGeometry } from './models.js';
 import { WATER_LEVEL, RIVER_HALF } from './terrain.js';
+import { Assets } from './assets.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// merged geometries need matching attributes: drop uvs, keep position/normal/colour
+function fixGeo(g) { if (g.attributes.uv) g.deleteAttribute('uv'); return g; }
 
 const TILE = 600;
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -12,53 +17,59 @@ function blob(r, color, x, y, z, sx = 1, sy = 1, sz = 1, detail = 1) {
   return part(new THREE.IcosahedronGeometry(r, detail), color, mat(x, y, z, 0, 0, 0, sx, sy, sz));
 }
 
+// a leafy canopy: many lumpy clumps, smooth-shaded, lighter on top and darker underneath
+function canopy(clumps, base, seed) {
+  const r = rng(seed);
+  const col = new THREE.Color(base);
+  const out = [];
+  for (const [x, y, z, rad] of clumps) {
+    let g = new THREE.IcosahedronGeometry(rad, 1);
+    g.deleteAttribute('uv');
+    g = mergeVertices(g);
+    const p = g.attributes.position;
+    const c = new Float32Array(p.count * 3);
+    const tint = 0.85 + r() * 0.3;
+    for (let i = 0; i < p.count; i++) {
+      const vx = p.getX(i), vy = p.getY(i), vz = p.getZ(i);
+      const n = Math.sin(vx * 3.1 + seed) * Math.cos(vz * 2.7) * Math.sin(vy * 3.7 + x) * 0.5 + 0.5;
+      const k = 1 + (n - 0.5) * 0.35;
+      p.setXYZ(i, vx * k + x, vy * k * 0.85 + y, vz * k + z);
+      const shade = (0.62 + 0.5 * clamp((vy / rad + 1) / 2, 0, 1)) * tint;
+      c[i * 3] = col.r * shade; c[i * 3 + 1] = col.g * shade; c[i * 3 + 2] = col.b * shade;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+    g.computeVertexNormals();
+    out.push(g.toNonIndexed ? g : g);
+  }
+  return out;
+}
+function trunk(l, h, r0, r1, branches, color) {
+  cyl(l, color, r1, r0, h, 0, h / 2, 0, 0, 0, 0, 9);
+  for (const [ang, tilt, len, y] of branches) {
+    const g = new THREE.CylinderGeometry(r1 * 0.45, r1 * 0.7, len, 6);
+    g.translate(0, len / 2, 0);
+    g.rotateZ(tilt); g.rotateY(ang); g.translate(0, y, 0);
+    l.push(part(g, color));
+  }
+}
+
 function makeTreeGeos() {
   const G = {};
   {
+    // round shade tree (neem / mango)
     const l = [];
-    cyl(l, '#5b4030', 0.22, 0.34, 3.2, 0, 1.6, 0, 0, 0, 0, 7);
-    l.push(blob(2.4, '#3f7a2c', 0, 4.6, 0, 1.2, 0.85, 1.2));
-    l.push(blob(1.8, '#4d8a34', 1.3, 5.4, 0.4, 1, 0.8, 1, 0));
-    l.push(blob(1.7, '#36702a', -1.1, 5.2, -0.6, 1, 0.8, 1, 0));
+    trunk(l, 3.4, 0.36, 0.24, [[0, 0.7, 2.0, 2.6], [2.1, 0.75, 1.9, 2.8], [4.2, 0.65, 1.8, 2.7]], '#5b4535');
+    const cl = [[0, 5.0, 0, 1.9], [1.5, 4.6, 0.6, 1.5], [-1.4, 4.7, -0.5, 1.5], [0.5, 4.5, -1.5, 1.4], [-0.6, 4.4, 1.5, 1.4], [0.9, 5.8, 0.2, 1.3], [-0.8, 5.7, -0.3, 1.3], [0, 6.3, 0.6, 1.1], [1.8, 4.0, -0.9, 1.0]];
+    l.push(...canopy(cl, '#4f8a35', 11).map(fixGeo));
     G.round = mergeGeos(l);
   }
   {
+    // tall tree (eucalyptus-like)
     const l = [];
-    cyl(l, '#6a5240', 0.25, 0.4, 7.5, 0, 3.75, 0, 0, 0, 0, 7);
-    l.push(blob(2.2, '#2f5f22', 0, 8.0, 0, 1, 1.25, 1));
-    l.push(blob(1.9, '#3a6e28', 0.3, 10.4, 0.2, 1, 1.1, 1, 0));
-    l.push(blob(1.4, '#2b5a20', -0.2, 12.2, 0, 1, 1.1, 1, 0));
+    trunk(l, 8.5, 0.34, 0.2, [[1, 0.5, 2.0, 6.5], [3.5, 0.55, 1.8, 7.2]], '#9a8a78');
+    const cl = [[0, 9.2, 0, 1.6], [0.6, 10.8, 0.3, 1.4], [-0.5, 10.4, -0.4, 1.3], [0.2, 12.2, 0, 1.2], [1.1, 9.0, -0.6, 1.1], [-1.0, 8.8, 0.7, 1.0], [0, 13.4, 0.2, 0.8]];
+    l.push(...canopy(cl, '#3e7230', 23).map(fixGeo));
     G.tall = mergeGeos(l);
-  }
-  {
-    // coconut palm: bent trunk + drooping fronds
-    const l = [];
-    const segs = 7, H = 10;
-    for (let i = 0; i < segs; i++) {
-      const y0 = (i / segs) * H, y1 = ((i + 1) / segs) * H;
-      const bend = (y) => 0.025 * y * y;
-      beam(l, i % 2 ? '#7b6550' : '#6c5845', V(bend(y0), y0, 0), V(bend(y1), y1, 0), 0.42 - i * 0.03, true);
-    }
-    const tx = 0.025 * H * H, ty = H;
-    for (let k = 0; k < 9; k++) {
-      const a = (k / 9) * Math.PI * 2;
-      const g = new THREE.PlaneGeometry(1.1, 5, 1, 5);
-      const p = g.attributes.position;
-      for (let i = 0; i < p.count; i++) {
-        const y = p.getY(i) + 2.5; // 0..5 along leaf
-        const w = Math.sin((y / 5) * Math.PI) * 0.9 + 0.1;
-        p.setX(i, p.getX(i) * w);
-        p.setZ(i, -0.06 * y * y);
-        p.setY(i, y);
-      }
-      g.rotateX(-Math.PI / 2 + 0.55);
-      g.rotateY(a);
-      g.translate(tx, ty, 0);
-      g.computeVertexNormals();
-      l.push(part(g, k % 2 ? '#4f8a2c' : '#5f9a34'));
-    }
-    for (let k = 0; k < 4; k++) l.push(blob(0.22, '#7a6a2a', tx + Math.cos(k * 1.6) * 0.35, ty - 0.35, Math.sin(k * 1.6) * 0.35, 1, 1, 1, 0));
-    G.palm = mergeGeos(l);
   }
   {
     const l = [];
@@ -73,7 +84,7 @@ function makeTreeGeos() {
     }
     G.banana = mergeGeos(l);
   }
-  G.bush = mergeGeos([blob(1.2, '#4a7a30', 0, 0.6, 0, 1.3, 0.7, 1.1, 0), blob(0.9, '#558a36', 0.8, 0.5, 0.3, 1, 0.7, 1, 0)]);
+  G.bush = mergeGeos(canopy([[0, 0.7, 0, 1.0], [0.8, 0.55, 0.3, 0.8], [-0.6, 0.55, -0.3, 0.75]], '#4f8a35', 5).map(fixGeo));
   G.rock = mergeGeos([part(new THREE.DodecahedronGeometry(1, 0), '#8a8580', mat(0, 0.3, 0, 0, 0, 0, 1.4, 0.8, 1.1))]);
   {
     const l = [];
@@ -426,7 +437,8 @@ export class Scenery {
     const mats = {
       std: new THREE.MeshLambertMaterial({ vertexColors: true }),
       leaf: new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }),
-      field: new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      field: Assets.material('dry_ground', { repeat: [4, 4], color: 0xb89a78 }),
+      fieldGrass: Assets.material('field', { repeat: [5, 5], roughness: 0.9 }),
       fieldShiny: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, map: canvasTexture(64, 64, (ctx, w, h) => {
         // rows of rice seedlings
         ctx.fillStyle = '#d8d8d8'; ctx.fillRect(0, 0, w, h);
@@ -434,7 +446,7 @@ export class Scenery {
       }, { repeat: [6, 6] }) }),
     };
     const geoFor = { round: G.round, tall: G.tall, palm: G.palm, banana: G.banana, bush: G.bush, rock: G.rock, hay: G.hay, cow: G.cow, field: fieldGeo, bund: fieldGeo, flowerRow: flowerGeo };
-    const matFor = { palm: mats.leaf, banana: mats.leaf, field: mats.fieldShiny, bund: mats.field, flowerRow: mats.field };
+    const matFor = { palm: mats.leaf, banana: mats.leaf, field: mats.fieldGrass, bund: mats.field, flowerRow: mats.fieldGrass };
     const shadowTypes = new Set(['round', 'tall', 'palm', 'banana', 'cow', 'hay']);
     this.instanced = [];
     for (const [key, t] of this.inst) {
@@ -480,9 +492,9 @@ export class Scenery {
     const flatGeo = new THREE.BoxGeometry(1, 1, 1); flatGeo.translate(0, 0.5, 0);
     const tankGeo = new THREE.CylinderGeometry(0.6, 0.6, 1.1, 12);
     const hm = {
-      body: new THREE.MeshLambertMaterial({ map: wallTex }),
-      roof: new THREE.MeshLambertMaterial({ color: 0xffffff }),
-      flat: new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      body: Object.assign(Assets.material('plaster', { roughness: 0.95, normal: 0.6 }), { map: wallTex }),
+      roof: Assets.material('roof_tiles', { repeat: [2, 2], roughness: 0.85 }),
+      flat: Assets.material('concrete', { roughness: 0.95 }),
       tank: new THREE.MeshLambertMaterial({ color: 0xffffff }),
     };
     const hg = { body: bodyGeo, roof: roofGeo, flat: flatGeo, tank: tankGeo };

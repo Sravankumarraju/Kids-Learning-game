@@ -1,5 +1,6 @@
 // Procedural heightfield: rolling countryside, regional hills, a river, a flattened town and a graded track bed.
 import * as THREE from 'three';
+import { Assets } from './assets.js';
 import { createNoise2D, fbm, rng, smoothstep, lerp, clamp, angDiff, SpatialHash, canvasTexture } from './util.js';
 import { STATIONS } from './data.js';
 
@@ -180,37 +181,34 @@ export class Terrain {
   buildMesh() {
     const W = this.nx + 1, D = this.nz + 1, cell = this.cell;
     const pos = new Float32Array(W * D * 3), col = new Float32Array(W * D * 3), uv = new Float32Array(W * D * 2);
-    const c = new THREE.Color(), tmp = new THREE.Color();
-    const C = (hex) => new THREE.Color(hex);
-    const grassA = C('#5e8a2e'), grassB = C('#8a9a3c');
-    const dirt = C('#8a6a45'), sand = C('#c8b080');
-    const laterite = C('#a8573a'), grey = C('#a09d94');
-    const forest = C('#3a5a22'), town = C('#a89470');
-    const lush = C('#4f9228'), gravel = C('#7a7268');
+    const spl = new Float32Array(W * D * 4); // texture weights: grass, forest floor, dry soil, sand
+    const tint = new THREE.Color();
     const tc = this.townCenter;
     for (let j = 0; j < D; j++) for (let i = 0; i < W; i++) {
       const k = j * W + i;
       const x = this.x0 + i * cell, z = this.z0 + j * cell, y = this.h[k];
       pos[k * 3] = x; pos[k * 3 + 1] = y; pos[k * 3 + 2] = z;
-      uv[k * 2] = x / 9; uv[k * 2 + 1] = z / 9;
+      uv[k * 2] = x / 7; uv[k * 2 + 1] = z / 7;
       const nz = fbm(this.n3, x / 160, z / 160, 3);
-      c.copy(grassA).lerp(grassB, clamp(0.5 + nz, 0, 1));
-      // slope
       const hx = this.h[k + (i < this.nx ? 1 : -1)] - y, hz = this.h[k + (j < this.nz ? W : -W)] - y;
       const slope = Math.hypot(hx, hz) / cell;
-      c.lerp(dirt, smoothstep(0.35, 0.75, slope));
-      c.lerp(forest, this.regionWeight('VNG', x, z, 900) * 0.85);
-      c.lerp(lush, this.regionWeight('DHN', x, z, 600) * 0.7);
-      c.lerp(laterite, this.regionWeight('ITK', x, z, 420) * 0.75);
-      c.lerp(grey, this.regionWeight('SLP', x, z, 380) * 0.7 * smoothstep(0.1, 0.5, slope + 0.2));
       const dT = Math.hypot(x - tc.x, z - tc.z);
-      c.lerp(town, (1 - smoothstep(250, 380, dT)) * 0.55);
-      if (y > 70) c.lerp(tmp.set('#76785c'), smoothstep(70, 140, y) * 0.6);
-      const rd = this.vRiverD[k];
-      c.lerp(sand, 1 - smoothstep(RIVER_HALF + 2, RIVER_HALF + 30, rd));
-      const td = this.vTrackD[k];
-      if (td < 40) c.lerp(gravel, (1 - smoothstep(6, 24, td)) * 0.7);
-      col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
+      const rd = this.vRiverD[k], td = this.vTrackD[k];
+      const lat = this.regionWeight('ITK', x, z, 420), slp = this.regionWeight('SLP', x, z, 380);
+      let gW = 1 + Math.max(0, nz) * 0.4;
+      let fW = this.regionWeight('VNG', x, z, 900) * 1.6 + Math.max(0, -nz) * 0.25;
+      let dW = smoothstep(0.3, 0.7, slope) * 1.5 + (1 - smoothstep(240, 370, dT)) * 1.2 + lat * 1.6 + slp * 0.9 * smoothstep(0.1, 0.5, slope + 0.2)
+        + (td < 40 ? (1 - smoothstep(6, 24, td)) * 1.2 : 0) + smoothstep(70, 140, y) * 0.6;
+      let sW = (1 - smoothstep(RIVER_HALF + 2, RIVER_HALF + 30, rd)) * 3;
+      const sum = gW + fW + dW + sW;
+      spl[k * 4] = gW / sum; spl[k * 4 + 1] = fW / sum; spl[k * 4 + 2] = dW / sum; spl[k * 4 + 3] = sW / sum;
+      // gentle colour tint on top of the real textures (regional soil colour, lush paddies, natural variation)
+      tint.setRGB(1, 1, 1);
+      tint.lerp(new THREE.Color(1.25, 0.78, 0.6), lat * 0.8);
+      tint.lerp(new THREE.Color(0.86, 1.06, 0.82), this.regionWeight('DHN', x, z, 600) * 0.6);
+      tint.lerp(new THREE.Color(0.95, 0.95, 0.97), slp * 0.5);
+      const v = 0.92 + nz * 0.1;
+      col[k * 3] = tint.r * v; col[k * 3 + 1] = tint.g * v; col[k * 3 + 2] = tint.b * v;
     }
     const idx = new Uint32Array(this.nx * this.nz * 6);
     let p = 0;
@@ -223,36 +221,39 @@ export class Terrain {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('splat', new THREE.BufferAttribute(spl, 4));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     g.computeVertexNormals();
     g.computeBoundingSphere();
 
-    const detail = canvasTexture(256, 256, (ctx, w, h) => {
-      const img = ctx.createImageData(w, h);
-      const rr = rng(7);
-      for (let q = 0; q < w * h; q++) {
-        const v = 175 + rr() * 80;
-        img.data[q * 4] = v; img.data[q * 4 + 1] = v; img.data[q * 4 + 2] = v; img.data[q * 4 + 3] = 255;
-      }
-      ctx.putImageData(img, 0, 0);
-      ctx.globalAlpha = 0.25;
-      for (let q = 0; q < 300; q++) {
-        ctx.fillStyle = rr() > 0.5 ? '#ffffff' : '#9a9a9a';
-        ctx.beginPath(); ctx.arc(rr() * w, rr() * h, 1 + rr() * 3, 0, 7); ctx.fill();
-      }
-    }, { repeat: [1, 1] });
-    detail.colorSpace = THREE.NoColorSpace;
-
-    const holes = this.holeUniform = { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] };
-    const m = new THREE.MeshLambertMaterial({ vertexColors: true, map: detail });
+    const holes = this.holeUniform = { value: Array.from({ length: 10 }, () => new THREE.Vector4()) };
+    // real ground textures blended per vertex; a second, larger-scale sample hides the tiling
+    const m = Assets.material('grass', { vertexColors: true, normal: 0.8 });
+    const extra = { tForest: { value: Assets.tex('forest_ground') }, tDirt: { value: Assets.tex('dry_ground') }, tSand: { value: Assets.tex('sand') } };
     m.onBeforeCompile = (sh) => {
       sh.uniforms.uHoles = holes;
+      Object.assign(sh.uniforms, extra);
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        .replace('#include <common>', `#include <common>
+varying vec3 vWPos;
+attribute vec4 splat;
+varying vec4 vSplat;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vSplat = splat;`);
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform vec4 uHoles[3];')
-        .replace('void main() {', 'void main() {\n for (int i = 0; i < 3; i++) { vec4 hb = uHoles[i]; if (vWPos.x > hb.x && vWPos.x < hb.z && vWPos.z > hb.y && vWPos.z < hb.w) discard; }');
+        .replace('#include <common>', `#include <common>
+varying vec3 vWPos;
+uniform vec4 uHoles[10];
+varying vec4 vSplat;
+uniform sampler2D tForest;
+uniform sampler2D tDirt;
+uniform sampler2D tSand;
+vec4 two(sampler2D t, vec2 u) { return mix(texture2D(t, u), texture2D(t, u * 0.21 + vec2(0.37, 0.11)), 0.4); }`)
+        .replace('void main() {', `void main() {
+ for (int i = 0; i < 10; i++) { vec4 hb = uHoles[i]; if (vWPos.x > hb.x && vWPos.x < hb.z && vWPos.z > hb.y && vWPos.z < hb.w) discard; }`)
+        .replace('#include <map_fragment>', `vec4 texelColor = two(map, vMapUv) * vSplat.x + two(tForest, vMapUv) * vSplat.y + two(tDirt, vMapUv) * vSplat.z + two(tSand, vMapUv) * vSplat.w;
+diffuseColor *= texelColor;`);
     };
     const mesh = new THREE.Mesh(g, m);
     mesh.receiveShadow = true;

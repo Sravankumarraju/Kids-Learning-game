@@ -9,6 +9,11 @@ export const AGE_BANDS = [
   { id: '8-10', label: '8–10 years', level: 3, breakMin: 30 },
 ];
 const ROUNDS = 5;
+export const STAGE_COUNT = 10;
+// each game has 10 stages: easier content first, more rounds and harder questions later
+export function stageParams(n) {
+  return { level: n <= 3 ? 1 : n <= 6 ? 2 : 3, rounds: 5 + Math.floor((n - 1) / 3), span: (n - 1) / (STAGE_COUNT - 1) };
+}
 const IDEAS = {
   colours: ['Count the red cars on your next walk.', 'Find three round things in the kitchen.', 'Mix two paints and name the new colour together.'],
   letters: ['Spot the first letter of shop signs on the road.', 'Write your name in big and small letters.', 'Play "I spy something beginning with B".'],
@@ -19,7 +24,7 @@ const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 const today = () => new Date().toISOString().slice(0, 10);
 
 export function defaultLearn() {
-  return { age: '', levels: {}, stats: {}, seen: { letters: {}, numbers: {}, colours: {}, shapes: {} }, minutes: {}, play: {}, speak: true, offers: true, breakMin: null, lastOffer: 0 };
+  return { age: '', levels: {}, stages: {}, stats: {}, seen: { letters: {}, numbers: {}, colours: {}, shapes: {} }, minutes: {}, play: {}, speak: true, offers: true, breakMin: null, lastOffer: 0 };
 }
 
 export class Learn {
@@ -86,31 +91,58 @@ export class Learn {
     this._back = back || null;
     const L = this.L;
     let h = `<div class="lsheet"><div class="lhead"><h1>Learning Games</h1><button class="btn" id="lpBack">← Back</button></div>
-      <p class="lead">Pick a game, ${esc(this.name)}! Each one is 5 quick rounds.</p>`;
+      <p class="lead">Pick a game, ${esc(this.name)}! Every game has 10 stages — finish one to open the next.</p>`;
     for (const area in AREAS) {
       h += `<h2>${AREAS[area].icon} ${AREAS[area].name}</h2><div class="lcards">`;
       for (const g of GAMES.filter((x) => x.area === area)) {
-        const st = L.stats[g.id];
-        const stars = st ? '★'.repeat(st.best) + '☆'.repeat(3 - st.best) : '☆☆☆';
-        h += `<button class="lcard" data-g="${g.id}"><span class="lico">${g.icon}</span><span class="lnm">${g.name}</span><span class="lds">${g.desc}</span><span class="lstars" aria-label="best stars">${stars}</span></button>`;
+        const sp = this.stageInfo(g.id);
+        const done = sp.stars.filter((x) => x > 0).length;
+        h += `<button class="lcard" data-g="${g.id}"><span class="lico">${g.icon}</span><span class="lnm">${g.name}</span><span class="lds">${g.desc}</span>
+          <span class="lprog" aria-label="${done} of 10 stages done"><i style="width:${done * 10}%"></i></span><span class="lstars">Stage ${Math.min(sp.open, STAGE_COUNT)}/10 · ⭐ ${sp.stars.reduce((a, b) => a + b, 0)}/30</span></button>`;
       }
       h += '</div>';
     }
     h += '</div>';
     const r = this.show(h);
-    r.querySelectorAll('[data-g]').forEach((b) => b.onclick = () => this.open(b.dataset.g, () => this.openPicker(this._back)));
+    r.querySelectorAll('[data-g]').forEach((b) => b.onclick = () => { this.sfx('click'); this.openStages(b.dataset.g); });
     r.querySelector('#lpBack').onclick = () => { this.close(); if (this._back) this._back(); };
     r.querySelector('[data-g]').focus();
   }
 
   // ---------------- a game session ----------------
-  open(id, after) {
+  stageInfo(id) {
+    const L = this.L;
+    L.stages ||= {};
+    return (L.stages[id] ||= { open: 1, stars: new Array(STAGE_COUNT).fill(0) });
+  }
+
+  // the 10-stage map of one game
+  openStages(id) {
+    const g = GAMES.find((x) => x.id === id);
+    const sp = this.stageInfo(id);
+    let h = `<div class="lsheet"><div class="lhead"><h1>${g.icon} ${g.name}</h1><button class="btn" id="lsBack">← All games</button></div>
+      <p class="lead">${g.desc} Pick a stage, ${esc(this.name)}!</p><div class="lstages">`;
+    for (let n = 1; n <= STAGE_COUNT; n++) {
+      const locked = n > sp.open, st = sp.stars[n - 1], p = stageParams(n);
+      h += `<button class="lstage ${locked ? 'locked' : ''} ${n === sp.open ? 'next' : ''}" data-n="${n}" ${locked ? 'disabled' : ''} aria-label="Stage ${n}${locked ? ', locked' : ''}">
+        <b>${locked ? '🔒' : n}</b><span class="lsst">${locked ? '' : st ? '⭐'.repeat(st) : 'new'}</span><small>${p.rounds} rounds · ${['', 'easy', 'medium', 'hard'][p.level]}</small></button>`;
+    }
+    h += '</div></div>';
+    const r = this.show(h);
+    r.querySelectorAll('[data-n]').forEach((b) => b.onclick = () => this.open(id, () => this.openStages(id), +b.dataset.n));
+    r.querySelector('#lsBack').onclick = () => this.openPicker(this._back);
+    (r.querySelector('.lstage.next') || r.querySelector('[data-n]')).focus();
+  }
+
+  open(id, after, stageNo) {
     const g = GAMES.find((x) => x.id === id);
     if (!g) return;
     this.hideOffer();
-    const L = this.L;
-    const level = L.levels[id] ?? this.band().level;
-    this.session = { g, round: 0, firstTry: 0, level, streakOk: 0, streakBad: 0, after, t0: performance.now(), r: rng((Date.now() & 0xffffff) ^ (id.length * 977)) };
+    const sp = this.stageInfo(id);
+    const n = Math.min(STAGE_COUNT, stageNo || sp.open);
+    const P = stageParams(n);
+    const level = P.level;
+    this.session = { g, round: 0, rounds: P.rounds, stageNo: n, span: P.span, firstTry: 0, level, streakOk: 0, streakBad: 0, after, t0: performance.now(), r: rng((Date.now() & 0xffffff) ^ (id.length * 977) ^ (n * 7919)) };
     const r = this.show(`<div class="lplay" role="dialog" aria-label="${g.name}">
       <div class="lbar"><span class="ltitle">${g.icon} ${g.name}</span><span class="ldots" id="lDots"></span><span class="llevel" id="lLevel"></span>
         <button class="btn sm" id="lSay" aria-label="Say it again">🔊</button><button class="btn sm" id="lSkip">Skip</button><button class="btn sm" id="lQuit">✕</button></div>
@@ -127,17 +159,17 @@ export class Learn {
     const s = this.session;
     if (!s) return;
     this.clearTimers();
-    if (s.round >= ROUNDS) { this.finish(); return; }
+    if (s.round >= s.rounds) { this.finish(); return; }
     s.round++;
     s.wrong = 0; s.locked = false; s.hints = []; s.hintOn = false; s.track = null;
     const dots = this.root.querySelector('#lDots');
-    dots.innerHTML = Array.from({ length: ROUNDS }, (_, i) => `<i class="${i < s.round - 1 ? 'done' : i === s.round - 1 ? 'now' : ''}"></i>`).join('');
-    this.root.querySelector('#lLevel').textContent = `Level ${s.level}`;
+    dots.innerHTML = Array.from({ length: s.rounds }, (_, i) => `<i class="${i < s.round - 1 ? 'done' : i === s.round - 1 ? 'now' : ''}"></i>`).join('');
+    this.root.querySelector('#lLevel').textContent = `Stage ${s.stageNo}/10`;
     const stage = this.root.querySelector('#lStage');
     stage.innerHTML = '';
     this.root.querySelector('#lFeed').textContent = '';
     const ctx = {
-      stage, r: s.r, level: s.level,
+      stage, r: s.r, level: s.level, stageNo: s.stageNo, span: s.span,
       prompt: (spoken, html, keep) => {
         s.spoken = spoken;
         this.root.querySelector('#lPrompt').innerHTML = html || esc(spoken);
@@ -203,8 +235,9 @@ export class Learn {
     const s = this.session;
     if (!s) return;
     const feed = this.root.querySelector('#lFeed');
-    if (s.streakOk >= 3 && s.level < 3) { s.level++; s.streakOk = 0; feed.innerHTML = '<span class="yay">🚀 Level up!</span>'; this.say('Level up!'); }
-    else if (s.streakBad >= 2 && s.level > 1) { s.level--; s.streakBad = 0; }
+    // the stage sets the difficulty; a struggling player gets one step easier for the rest of the stage
+    if (s.streakBad >= 2 && s.level > 1) { s.level--; s.streakBad = 0; }
+    void feed;
     this.L.levels[s.g.id] = s.level;
   }
 
@@ -221,24 +254,32 @@ export class Learn {
 
   finish() {
     const s = this.session;
-    const stars = s.firstTry >= 5 ? 3 : s.firstTry >= 3 ? 2 : 1;
-    const coins = stars * 10;
+    const ratio = s.firstTry / s.rounds;
+    const stars = ratio >= 0.99 ? 3 : ratio >= 0.6 ? 2 : 1;
+    const coins = stars * 10 + s.stageNo * 2;
     const L = this.L;
     const st = L.stats[s.g.id] ||= { plays: 0, rounds: 0, firstTry: 0, best: 0 };
-    st.plays++; st.rounds += ROUNDS; st.firstTry += s.firstTry; st.best = Math.max(st.best, stars);
+    st.plays++; st.rounds += s.rounds; st.firstTry += s.firstTry; st.best = Math.max(st.best, stars);
+    const sp = this.stageInfo(s.g.id);
+    sp.stars[s.stageNo - 1] = Math.max(sp.stars[s.stageNo - 1] || 0, stars);
+    const opened = s.stageNo === sp.open && sp.open <= STAGE_COUNT;
+    if (opened) sp.open = Math.min(STAGE_COUNT + 1, sp.open + 1);
     this.addMinutes(s);
     this.game.state.coins += coins;
     const msg = stars === 3 ? `Amazing, ${this.name}! Three stars!` : stars === 2 ? `Well done, ${this.name}! Two stars!` : `Good effort, ${this.name}! Practice makes perfect.`;
     this.say(msg);
     this.sfx('fanfare');
     const r = this.show(`<div class="lsheet lend"><div class="bigstars">${'⭐'.repeat(stars)}${'☆'.repeat(3 - stars)}</div>
-      <h1>${esc(msg)}</h1><p class="lead">${s.firstTry} of ${ROUNDS} right first time · +${coins} coins · now on level ${s.level}</p>
-      <div class="foot" style="justify-content:center"><button class="btn big" id="leBack">Back</button><button class="btn primary big" id="leAgain">Play again</button></div></div>`);
+      <h1>${esc(msg)}</h1><p class="lead">Stage ${s.stageNo} · ${s.firstTry} of ${s.rounds} right first time · +${coins} coins</p>
+      ${opened && s.stageNo < STAGE_COUNT ? `<p class="lead">🔓 Stage ${s.stageNo + 1} is open!</p>` : ''}${s.stageNo === STAGE_COUNT ? '<p class="lead">🏆 You finished all 10 stages of this game!</p>' : ''}
+      <div class="foot" style="justify-content:center"><button class="btn big" id="leBack">Stages</button><button class="btn big" id="leAgain">Play again</button>${s.stageNo < STAGE_COUNT ? '<button class="btn primary big" id="leNext">Next stage ▶</button>' : ''}</div></div>`);
     const after = s.after;
     this.session = null;
-    r.querySelector('#leAgain').onclick = () => this.open(s.g.id, after);
-    r.querySelector('#leBack').onclick = () => { this.close(); if (after) after(); };
-    r.querySelector('#leAgain').focus();
+    r.querySelector('#leAgain').onclick = () => this.open(s.g.id, after, s.stageNo);
+    r.querySelector('#leBack').onclick = () => this.openStages(s.g.id);
+    const nx = r.querySelector('#leNext');
+    if (nx) nx.onclick = () => this.open(s.g.id, after, s.stageNo + 1);
+    (nx || r.querySelector('#leAgain')).focus();
     this.game.save();
   }
 

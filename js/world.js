@@ -5,6 +5,7 @@ import { M, box, cyl, beam, cargoGeometry } from './models.js';
 import { RAIL_TOP } from './track.js';
 import { WATER_LEVEL, RIVER_HALF } from './terrain.js';
 import { CARGO } from './data.js';
+import { Assets } from './assets.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 export const STOP_AHEAD = 47; // loco head stop point ahead of station centre
@@ -85,7 +86,8 @@ export class World {
         ctx.beginPath(); ctx.ellipse(r() * w, r() * h, 1.5 + r() * 3, 1 + r() * 2.5, r() * 3, 0, 7); ctx.fill();
       }
     }, { repeat: [1, 1] });
-    const bMat = new THREE.MeshLambertMaterial({ map: ballastTex, vertexColors: true });
+    const bMat = Assets.material('ballast', { repeat: [0.45, 0.45], color: 0xbdb5a8 });
+    void ballastTex;
     const railMat = M.vcMetal;
     const sleeperGeo = mergeGeos([part(new THREE.BoxGeometry(2.75, 0.18, 0.26), '#7d776c'), part(new THREE.BoxGeometry(0.3, 0.05, 0.3), '#3a3a3a', mat(0.84, 0.11, 0)), part(new THREE.BoxGeometry(0.3, 0.05, 0.3), '#3a3a3a', mat(-0.84, 0.11, 0))]);
     const chunk = 500;
@@ -519,7 +521,17 @@ export class World {
       }),
     };
     for (const k in tex) { tex[k].wrapT = THREE.RepeatWrapping; }
-    const mats = { asphalt: new THREE.MeshLambertMaterial({ map: tex.asphalt }), dirt: new THREE.MeshLambertMaterial({ map: tex.dirt }) };
+    const lines = canvasTexture(64, 256, (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(235,232,215,0.95)'; ctx.fillRect(2, 0, 3, h); ctx.fillRect(w - 5, 0, 3, h);
+      ctx.fillStyle = 'rgba(240,210,90,0.95)'; ctx.fillRect(w / 2 - 1.5, 0, 3, h / 2);
+    });
+    lines.wrapT = THREE.RepeatWrapping;
+    const mats = {
+      asphalt: Assets.material('asphalt', { repeat: [1, 1], roughness: 0.95 }),
+      dirt: Assets.material('dry_ground', { repeat: [1, 1], color: 0xd8b890 }),
+    };
+    const lineMat = new THREE.MeshStandardMaterial({ map: lines, transparent: true, depthWrite: false, roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
     for (const road of this.roads) {
       const { pts, width } = road;
       const pos = [], uv = [], idx = [];
@@ -546,6 +558,7 @@ export class World {
       m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2;
       const c = pts[Math.floor(pts.length / 2)];
       this.addTile(m, c[0], c[1]);
+      if (road.kind === 'asphalt') { const lm = new THREE.Mesh(g, lineMat); lm.receiveShadow = true; this.addTile(lm, c[0], c[1]); }
     }
   }
 

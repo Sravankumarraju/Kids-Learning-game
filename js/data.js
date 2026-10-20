@@ -35,7 +35,21 @@ export const STORY_MISSIONS = [
     stops: [{ st: 'DHN', load: { produce: 6, saplings: 6 } }], dest: 'MTP', coins: 220 },
   { id: 'm5', title: 'Multi-Stop: Roof & Windows', desc: 'Load roof tiles at Itkheda, then glass and paint at Rangpura, then return to Mitrapur.',
     stops: [{ st: 'ITK', load: { tiles: 8 } }, { st: 'RGP', load: { glass: 4, paint: 4 } }], dest: 'MTP', coins: 320 },
+  { id: 'm6', title: 'Glass for the Clinic', desc: 'The new clinic needs windows: fetch glass and paint from the Rangpura factories.',
+    stops: [{ st: 'RGP', load: { glass: 6, paint: 4 } }], dest: 'MTP', coins: 340 },
+  { id: 'm7', title: 'Flowers and Farm Goods', desc: 'Collect produce at Dhanpur, then saplings from the Phoolwadi flower nursery.',
+    stops: [{ st: 'DHN', load: { produce: 8 } }, { st: 'PHW', load: { saplings: 6 } }], dest: 'MTP', coins: 380 },
+  { id: 'm8', title: 'The Big Cement Order', desc: 'A heavy train: cement from Shilapur and bricks from Itkheda for the school.',
+    stops: [{ st: 'SLP', load: { cement: 14 } }, { st: 'ITK', load: { bricks: 10 } }], dest: 'MTP', coins: 420 },
+  { id: 'm9', title: 'Hill Timber Run', desc: 'Climb to the Vanagiri forest for timber, then pick up cement on the way back.',
+    stops: [{ st: 'VNG', load: { timber: 10 } }, { st: 'SLP', load: { cement: 6 } }], dest: 'MTP', coins: 460 },
+  { id: 'm10', title: 'Grand Supply Tour', desc: 'The final run: tiles, glass, timber and saplings from four stations for the Town Hall.',
+    stops: [{ st: 'ITK', load: { tiles: 6 } }, { st: 'RGP', load: { glass: 4 } }, { st: 'VNG', load: { timber: 6 } }, { st: 'DHN', load: { saplings: 4 } }], dest: 'MTP', coins: 600 },
 ];
+STORY_MISSIONS.forEach((m, i) => { m.level = i + 1; });
+
+// passenger service levels: passengers carried in total to reach each level, and the bonus for it
+export const PASSENGER_LEVELS = [5, 12, 20, 30, 42, 56, 72, 90, 110, 135].map((need, i) => ({ level: i + 1, need, bonus: 50 + i * 30 }));
 
 // Repeatable supply-run templates (ids are generated with a counter so each is rewarded once).
 export const SUPPLY_TEMPLATES = [
@@ -50,17 +64,24 @@ export const TRUCK_PRICE = 250;
 export const PLOT_PRICES = [0, 200, 300];
 export const TRUCK_CAPACITY = 14;
 
+// Real construction order. Columns, walls and slab/roof repeat for every floor.
 export const STAGES = [
-  { key: 'clear',    name: 'Clear the plot',          need: {} },
-  { key: 'excavate', name: 'Excavate the foundation', need: {} },
-  { key: 'concrete', name: 'Pour concrete',           need: { cement: 4 } },
-  { key: 'walls',    name: 'Build walls',             need: { bricks: 8, cement: 2 } },
-  { key: 'roof',     name: 'Install the roof',        need: { timber: 3, tiles: 4 } },
-  { key: 'fittings', name: 'Add windows and doors',   need: { timber: 2, glass: 2 } },
-  { key: 'paint',    name: 'Paint the house',         need: { paint: 2 } },
-  { key: 'garden',   name: 'Garden, path and fence',  need: { saplings: 3, timber: 1 } },
+  { key: 'survey',   name: 'Survey and mark out',       need: {} },
+  { key: 'clear',    name: 'Clear the site',            need: {} },
+  { key: 'dig',      name: 'Dig the foundation trenches', need: {} },
+  { key: 'steel',    name: 'Steel reinforcement',       need: { timber: 1 } },
+  { key: 'footing',  name: 'Pour the concrete footing', need: { cement: 3 } },
+  { key: 'plinth',   name: 'Plinth and damp-proof layer', need: { bricks: 2, cement: 1 } },
+  { key: 'columns',  name: 'Concrete columns',          need: { cement: 2, timber: 1 } },
+  { key: 'walls',    name: 'Brick walls',               need: { bricks: 8, cement: 2 } },
+  { key: 'roof',     name: 'Slab and roof',             need: { timber: 2, tiles: 3 } },
+  { key: 'fittings', name: 'Doors, windows, wiring and pipes', need: { timber: 2, glass: 2 } },
+  { key: 'finish',   name: 'Plaster and paint',         need: { paint: 2, cement: 1 } },
+  { key: 'handover', name: 'Floors, garden and handover', need: { saplings: 3 } },
 ];
-export const HOUSE_REWARD = 300;
+export const STAGE_COLUMNS = 6, STAGE_ROOF = 8;
+export const PLOT_COUNT = 10;
+export const HOUSE_REWARD = 300; // plus 100 more for each later project
 
 export const PAINT_COLORS = [
   { name: 'Sky blue', hex: '#7fb8e0' },

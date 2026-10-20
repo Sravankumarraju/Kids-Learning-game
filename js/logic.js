@@ -1,8 +1,8 @@
 // Pure game rules shared by every system: missions, inventory, rewards, unlocks, construction, saving.
 // No DOM / Three.js here so the rules can be unit-tested (see tests.js).
-import { STORY_MISSIONS, SUPPLY_TEMPLATES, MATERIALS, STAGES, HOUSE_REWARD, TRUCK_PRICE, PLOT_PRICES, TRUCK_CAPACITY, STATIONS } from './data.js';
+import { STORY_MISSIONS, SUPPLY_TEMPLATES, MATERIALS, STAGES, HOUSE_REWARD, TRUCK_PRICE, PLOT_PRICES, TRUCK_CAPACITY, STATIONS, STAGE_COLUMNS, STAGE_ROOF, PLOT_COUNT } from './data.js';
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 export const SAVE_KEY = 'bmt-save';
 export const WAGONS = 6;
 
@@ -19,16 +19,25 @@ export function newState() {
     rules: { realMaterials: false },
     passenger: { onboard: 0, served: 0, lastStop: null },
     learn: { age: '', levels: {}, stats: {}, seen: { letters: {}, numbers: {}, colours: {}, shapes: {} }, minutes: {}, play: {}, speak: true, offers: true, breakMin: null, lastOffer: 0 },
+    learn: { age: '', levels: {}, stats: {}, seen: { letters: {}, numbers: {}, colours: {}, shapes: {} }, minutes: {}, play: {}, speak: true, offers: true, breakMin: null, lastOffer: 0 },
     missions: { completed: [], active: null, supplyCounter: 0, board: [] },
     trainCargo: new Array(WAGONS).fill(null),
     train: { s: 60, dir: 1, lights: true, assist: false },
     vehicles: { car: null, truck: null, truckCargo: emptyInv() },
-    plots: [0, 1, 2].map(() => ({ unlocked: true, stage: 0, site: emptyInv(), progress: {}, color: null, done: false, design: null })),
+    plots: newPlots(),
     housesBuilt: 0,
     mode: 'train',
     stats: { deliveries: 0, distanceKm: 0 },
     log: [],
   };
+}
+
+// one plot per building project; each opens when the one before it is finished
+function newPlots() {
+  return Array.from({ length: PLOT_COUNT }, (_, i) => ({ unlocked: i === 0, stage: 0, floor: 0, site: emptyInv(), progress: {}, quality: [], colors: null, done: false, design: null }));
+}
+export function unlockPlots(s) {
+  s.plots.forEach((p, i) => { p.unlocked = i === 0 || !!s.plots[i - 1].done || p.stage > 0 || p.done; });
 }
 
 // Merge a loaded save onto defaults so new fields added in updates keep old progress.
@@ -45,9 +54,18 @@ export function migrate(raw) {
     for (const k of MATERIALS) inv[k] = Math.max(0, Math.floor(Number(inv[k]) || 0));
   }
   s.coins = Math.max(0, Math.floor(Number(s.coins) || 0));
-  // everything is open from the start (no unlock gates)
+  // vehicles are always available
   s.unlocks = { car: true, truck: true, truckOffer: true };
-  for (const p of s.plots) p.unlocked = true;
+  if (raw.version < 4) {
+    // the construction site changed from 8 to 12 stages: finished buildings stay finished, started ones restart
+    s.plots = newPlots().map((fresh, i) => {
+      const old = (raw.plots || [])[i];
+      if (old && old.done) return { ...fresh, done: true, stage: STAGES.length, colors: old.colors || null };
+      return fresh;
+    });
+  }
+  while (s.plots.length < PLOT_COUNT) s.plots.push(newPlots()[0]);
+  unlockPlots(s);
   s.missions.completed = [...new Set(s.missions.completed)];
   s.version = SAVE_VERSION;
   return s;
@@ -276,15 +294,26 @@ export function completeStage(state, plotIdx, stageIdx) {
   if (!p || !canWorkStage(p, stageIdx, real)) return null;
   const need = real ? STAGES[stageIdx].need : {};
   for (const k in need) p.site[k] -= need[k];
+  const res = { stage: stageIdx, consumed: { ...need }, houseDone: false, coins: 0, nextFloor: false };
+  const floors = p.floors || 1;
+  if (stageIdx === STAGE_ROOF && (p.floor || 0) + 1 < floors) {
+    // another storey: columns, walls and slab again on the next floor
+    p.floor = (p.floor || 0) + 1;
+    p.stage = STAGE_COLUMNS;
+    p.progress = {};
+    res.nextFloor = true;
+    return res;
+  }
   p.stage = stageIdx + 1;
   p.progress = {};
-  const res = { stage: stageIdx, consumed: { ...need }, houseDone: false, coins: 0 };
   if (p.stage >= STAGES.length && !p.done) {
     p.done = true;
     state.housesBuilt++;
-    state.coins += HOUSE_REWARD;
+    const reward = HOUSE_REWARD + 100 * plotIdx;
+    state.coins += reward;
     res.houseDone = true;
-    res.coins = HOUSE_REWARD;
+    res.coins = reward;
+    if (state.plots[plotIdx + 1]) state.plots[plotIdx + 1].unlocked = true;
   }
   return res;
 }

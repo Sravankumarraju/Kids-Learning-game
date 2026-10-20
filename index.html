@@ -7,7 +7,7 @@
   <title>Build My Town: Indian Railway Adventure</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect x=%224%22 y=%228%22 width=%2224%22 height=%2214%22 rx=%223%22 fill=%22%239c2219%22/%3E%3Crect x=%224%22 y=%2214%22 width=%2224%22 height=%222%22 fill=%22%23efe2bf%22/%3E%3Ccircle cx=%2210%22 cy=%2224%22 r=%223%22 fill=%22%23333%22/%3E%3Ccircle cx=%2222%22 cy=%2224%22 r=%223%22 fill=%22%23333%22/%3E%3C/svg%3E">
   <link rel="stylesheet" href="css/style.css">
-  <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+  <script type="importmap">{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }</script>
 </head>
 <body data-mode="title">
   <canvas id="c" aria-label="3D game view"></canvas>
@@ -27,6 +27,7 @@
       <button id="guideShow" class="chip gshow" hidden>👷 Guide</button>
     </div>
     <div id="topRight">
+      <div class="chip clock" id="clock" title="Time of day">🕗 <span id="clockVal">08:30</span></div>
       <div class="chip coins" title="Coins"><span class="coin" aria-hidden="true"></span><span id="coinVal">0</span><span class="sr">coins</span></div>
       <button id="btnHome" class="iconbtn" aria-label="Home menu: choose train, vehicle or building" title="Home menu">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 8h-3v9h-5v-6h-2v6H6v-9H3z"/></svg>
@@ -117,6 +118,7 @@
     </div>
   </div>
   <div id="overlay" hidden></div>
+  <div id="learn" hidden></div>
   <div id="learn" hidden></div>
   <div id="modal" hidden></div>
   <noscript>This game needs JavaScript.</noscript>

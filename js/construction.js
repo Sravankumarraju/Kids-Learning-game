@@ -1,987 +1,1492 @@
-// House construction: 8 visible stages on each plot, interactive excavator, mixer, crane, snapping parts, painting, garden.
+// Real-time construction: ten building projects, twelve real stages each (columns, walls and slab repeat for every
+// floor). Every stage opens with a short lesson and a method choice, then the player does the work with real
+// machines and a site crew, gets stars for accuracy, and the days pass in a quick time-lapse.
 import * as THREE from 'three';
-import { canvasTexture, rng, clamp, mergeGeos, part, mat } from './util.js';
-import { M, box, cyl, makeExcavator, makeCrane, makeMixer } from './models.js';
-import { STAGES, PAINT_COLORS, CARGO, BUILDING_TYPES } from './data.js';
+import { STAGES, PAINT_COLORS, CARGO, STAGE_ROOF } from './data.js';
 import * as L from './logic.js';
+import * as B from './buildgeo.js';
+import * as V from './sitevis.js';
+import { ST } from './sitevis.js';
+import { LESSONS, QUIZZES, INSPECTION } from './lessons.js';
+import { makeBulldozer, makeBackhoe, makeExcavator2, makeTipper, makeMixer2, makePump, makeRoller, makeTripod, makeWorker, animateWorker } from './machines.js';
+import { makeCrane } from './models.js';
+import { clamp, lerp, angDiff } from './util.js';
 
-const SLAB_Y = 0.2, WALL_H = 3.2;
-// layout of the building currently being handled (set by useLayout for each plot's design)
-let RIDGE = 1.8, PIT, EXC_POS, SPOIL, WALLS, FITTINGS, ROOFS, GARDEN, DESIGN, TYPE;
-const CRANE_POS = new THREE.Vector3(14, 0, 2);
-const STACK = new THREE.Vector3(3, 0, 15.5);
-
-// ---------- textures ----------
-const TEX = {};
-function textures() {
-  if (TEX.brick) return TEX;
-  TEX.brick = canvasTexture(256, 256, (ctx, w, h) => {
-    ctx.fillStyle = '#cfc5b4'; ctx.fillRect(0, 0, w, h);
-    const r = rng(5);
-    const rows = 13, bw = w / 4, bh = h / rows;
-    for (let y = 0; y < rows; y++) for (let x = -1; x < 5; x++) {
-      const ox = (y % 2) * bw / 2;
-      const c = 150 + r() * 40;
-      ctx.fillStyle = `rgb(${c},${c * 0.42},${c * 0.3})`;
-      ctx.fillRect(x * bw + ox + 2, y * bh + 2, bw - 4, bh - 4);
-    }
-  }, { repeat: [1, 1] });
-  TEX.plaster = canvasTexture(128, 128, (ctx, w, h) => {
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-    const r = rng(8);
-    for (let i = 0; i < 700; i++) { const g = 225 + r() * 30; ctx.fillStyle = `rgb(${g},${g},${g})`; ctx.fillRect(r() * w, r() * h, 2, 2); }
-  }, { repeat: [1, 1] });
-  TEX.tiles = canvasTexture(256, 256, (ctx, w, h) => {
-    ctx.fillStyle = '#7a2e1a'; ctx.fillRect(0, 0, w, h);
-    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-      const g = ctx.createLinearGradient(0, y * 32, 0, y * 32 + 32);
-      g.addColorStop(0, '#d0703c'); g.addColorStop(1, '#8e3a20');
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.ellipse(x * 32 + 16 + (y % 2) * 16, y * 32 + 18, 15, 16, 0, 0, Math.PI * 2); ctx.fill();
-    }
-  }, { repeat: [11, 5] });
-  TEX.tin = canvasTexture(128, 128, (ctx, w, h) => {
-    for (let x = 0; x < w; x += 8) { ctx.fillStyle = x % 16 ? '#d8d8d8' : '#ffffff'; ctx.fillRect(x, 0, 8, h); }
-  }, { repeat: [12, 1] });
-  TEX.concrete = canvasTexture(128, 128, (ctx, w, h) => {
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-    const r = rng(12);
-    for (let i = 0; i < 500; i++) { const g = 200 + r() * 55; ctx.fillStyle = `rgb(${g},${g},${g})`; ctx.fillRect(r() * w, r() * h, 2, 2); }
-  }, { repeat: [3, 3] });
-  return TEX;
-}
-
-// ---------- building layout (local to plot, front faces +z), derived from the chosen design ----------
-export const DEFAULT_DESIGN = { type: 'house', roof: 'tiles', color: PAINT_COLORS[0].hex };
-function useLayout(design) {
-  DESIGN = { ...DEFAULT_DESIGN, ...(design || {}) };
-  TYPE = BUILDING_TYPES.find((b) => b.id === DESIGN.type) || BUILDING_TYPES[0];
-  const W = TYPE.w, D = TYPE.d, hw = W / 2, hd = D / 2;
-  const gable = DESIGN.roof !== 'flat';
-  RIDGE = gable ? hd * 0.45 : 0;
-  // front wall: door (wide shutter for the shop, centred for the clinic) and windows
-  const doorW = TYPE.id === 'shop' ? 2.2 : 1.1, doorH = TYPE.id === 'shop' ? 2.4 : 2.1;
-  const doorU = TYPE.id === 'clinic' ? 0 : -hw + 2.4;
-  const front = [{ type: 'door', u: doorU, v: 0.05, w: doorW, h: doorH }];
-  for (let u = -hw + 1.4; u + 0.7 < hw - 0.5; u += 2.6) {
-    if (Math.abs(u - doorU) < doorW / 2 + 1.0) continue;
-    front.push({ type: 'window', u, v: 1.0, w: 1.4, h: 1.2 });
-  }
-  const nb = Math.max(2, Math.floor((W - 2) / 3));
-  const back = [];
-  for (let k = 0; k < nb; k++) back.push({ type: 'window', u: -hw + ((k + 0.5) * W) / nb, v: 1.0, w: 1.4, h: 1.2 });
-  const side = [{ type: 'window', u: 0, v: 1.0, w: 1.4, h: 1.2 }];
-  const hole = (h) => [h.u - h.w / 2, h.v, h.u + h.w / 2, h.v + h.h];
-  WALLS = [
-    { id: 'front', pos: [0, SLAB_Y, hd - 0.12], rot: 0, w: W, gable: false, open: front },
-    { id: 'back', pos: [0, SLAB_Y, -hd + 0.12], rot: Math.PI, w: W, gable: false, open: back },
-    { id: 'left', pos: [-hw + 0.12, SLAB_Y, 0], rot: -Math.PI / 2, w: D - 0.5, gable, open: side },
-    { id: 'right', pos: [hw - 0.12, SLAB_Y, 0], rot: Math.PI / 2, w: D - 0.5, gable, open: side },
-  ];
-  for (const w of WALLS) w.holes = w.open.map(hole);
-  FITTINGS = [];
-  for (const w of WALLS) w.open.forEach((h, k) => FITTINGS.push({ id: `${w.id}${k}`, type: h.type, wall: w.id, u: h.u, v: h.v, w: h.w - 0.04, h: h.h - 0.04 }));
-  if (gable) {
-    const run = hd + 0.6, slope = RIDGE / hd;
-    const len = Math.hypot(run, slope * run);
-    const y = SLAB_Y + WALL_H + RIDGE - (slope * run) / 2 + 0.1;
-    ROOFS = [
-      { id: 'roofF', pos: [0, y, run / 2], rotX: Math.atan(slope), size: [W + 1.4, 0.16, len] },
-      { id: 'roofB', pos: [0, y, -run / 2], rotX: -Math.atan(slope), size: [W + 1.4, 0.16, len] },
-    ];
-  } else {
-    const half = hd + 0.3;
-    ROOFS = [
-      { id: 'roofF', pos: [0, SLAB_Y + WALL_H + 0.13, half / 2], rotX: 0, size: [W + 0.6, 0.26, half] },
-      { id: 'roofB', pos: [0, SLAB_Y + WALL_H + 0.13, -half / 2], rotX: 0, size: [W + 0.6, 0.26, half] },
-    ];
-  }
-  PIT = { hx: hw + 0.4, hz: hd + 0.4, depth: 1.3 };
-  EXC_POS = new THREE.Vector3(-(PIT.hx + 3.1), 0, 0);
-  SPOIL = new THREE.Vector3(EXC_POS.x, 0, -8.5);
-  const gl = doorU - 1, gr = doorU + 1;
-  GARDEN = [
-    { id: 'fenceB', kind: 'fence', pos: [0, 0, -10.6], rot: 0, len: 23 },
-    { id: 'fenceL', kind: 'fence', pos: [-11.5, 0, 0], rot: Math.PI / 2, len: 21 },
-    { id: 'fenceR', kind: 'fence', pos: [11.5, 0, 0], rot: Math.PI / 2, len: 21 },
-    { id: 'fenceFL', kind: 'fence', pos: [(-11.5 + gl) / 2, 0, 10.6], rot: 0, len: gl + 11.5 },
-    { id: 'fenceFR', kind: 'fence', pos: [(gr + 11.5) / 2, 0, 10.6], rot: 0, len: 11.5 - gr },
-    { id: 'path', kind: 'path', pos: [doorU, 0, (hd + 10.6) / 2], rot: 0, len: 10.6 - hd },
-    { id: 'plant1', kind: 'plant', pos: [-9, 0, 8], rot: 0 },
-    { id: 'plant2', kind: 'plant', pos: [9, 0, 8], rot: 0 },
-    { id: 'plant3', kind: 'plant', pos: [9, 0, -8.5], rot: 1 },
-  ];
-}
-useLayout(DEFAULT_DESIGN);
-
-function wallGeometry(wd) {
-  const hw = wd.w / 2;
-  const sh = new THREE.Shape();
-  sh.moveTo(-hw, 0); sh.lineTo(hw, 0); sh.lineTo(hw, WALL_H);
-  if (wd.gable) sh.lineTo(0, WALL_H + RIDGE);
-  sh.lineTo(-hw, WALL_H); sh.closePath();
-  for (const [u0, v0, u1, v1] of wd.holes) {
-    const h = new THREE.Path();
-    h.moveTo(u0, v0); h.lineTo(u1, v0); h.lineTo(u1, v1); h.lineTo(u0, v1); h.closePath();
-    sh.holes.push(h);
-  }
-  const g = new THREE.ExtrudeGeometry(sh, { depth: 0.24, bevelEnabled: false });
-  g.translate(0, 0, -0.12);
-  return g;
-}
-function fittingGeometry(f) {
-  const l = [];
-  if (f.type === 'door') {
-    box(l, '#6b3f22', f.w, f.h, 0.08, 0, 0, 0);
-    box(l, '#8a5530', f.w * 0.8, f.h * 0.4, 0.1, 0, f.h * 0.2, 0);
-    box(l, '#8a5530', f.w * 0.8, f.h * 0.35, 0.1, 0, -f.h * 0.25, 0);
-    box(l, '#d4b04a', 0.08, 0.08, 0.16, f.w * 0.35, -0.05, 0);
-  } else {
-    box(l, '#f2efe6', f.w, 0.08, 0.3, 0, -f.h / 2, 0);
-    box(l, '#f2efe6', f.w, 0.08, 0.3, 0, f.h / 2, 0);
-    box(l, '#f2efe6', 0.08, f.h, 0.3, -f.w / 2, 0, 0);
-    box(l, '#f2efe6', 0.08, f.h, 0.3, f.w / 2, 0, 0);
-    box(l, '#f2efe6', 0.06, f.h, 0.2, 0, 0, 0);
-    for (let k = 1; k < 4; k++) box(l, '#3a3a3a', 0.03, f.h, 0.03, -f.w / 2 + (k * f.w) / 4, 0, 0.1);
-    box(l, '#8fb8cc', f.w - 0.1, f.h - 0.1, 0.02, 0, 0, -0.04);
-  }
-  return mergeGeos(l);
-}
-function gardenGeometry(gd) {
-  const l = [];
-  if (gd.kind === 'fence') {
-    const n = Math.round(gd.len / 1.2);
-    for (let i = 0; i <= n; i++) box(l, '#f1ede2', 0.12, 1.1, 0.12, -gd.len / 2 + (i * gd.len) / n, 0.55, 0);
-    box(l, '#2f8f5a', gd.len, 0.1, 0.06, 0, 0.85, 0);
-    box(l, '#2f8f5a', gd.len, 0.1, 0.06, 0, 0.4, 0);
-  } else if (gd.kind === 'path') {
-    const n = Math.max(1, Math.floor(gd.len));
-    for (let i = 0; i < n; i++) box(l, i % 2 ? '#bdb6a6' : '#a8a090', 1.4, 0.12, 0.85, (i % 2) * 0.1, 0.06, -gd.len / 2 + 0.5 + i);
-  } else {
-    cyl(l, '#7a4a2a', 0.5, 0.42, 0.45, 0, 0.22, 0, 0, 0, 0, 10);
-    cyl(l, '#5b3a22', 0.06, 0.09, 1.6, 0, 1.2, 0, 0, 0, 0, 6);
-    l.push(part(new THREE.IcosahedronGeometry(0.9, 1), '#3f8f34', mat(0, 2.2, 0, 0, 0, 0, 1, 0.85, 1)));
-    for (let k = 0; k < 6; k++) l.push(part(new THREE.IcosahedronGeometry(0.13, 0), ['#f29a1a', '#e8452e', '#f5c518'][k % 3], mat(Math.cos(k) * 0.55, 0.5, Math.sin(k) * 0.55)));
-  }
-  return mergeGeos(l);
-}
-
-const ghostMat = new THREE.MeshBasicMaterial({ color: 0x4cff8a, transparent: true, opacity: 0.28, depthWrite: false });
-const ghostHot = new THREE.MeshBasicMaterial({ color: 0xffe14c, transparent: true, opacity: 0.45, depthWrite: false });
+const DAYS = [1, 1, 2, 2, 8, 3, 8, 6, 15, 4, 5, 3];
+const ease = (k) => k * k * (3 - 2 * k);
+const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 export class Construction {
   constructor(game) {
     this.game = game;
-    this.world = game.world;
     this.town = game.town;
     this.terrain = game.terrain;
     this.audio = game.audio;
-    textures();
-    this.sites = this.town.plots.map((p) => {
-      const g = new THREE.Group();
-      g.position.set(p.x, p.y, p.z);
-      game.scene.add(g);
-      return { plot: p, g, parts: {} };
+    this.sites = this.town.plots.map((p, i) => {
+      const root = new THREE.Group();
+      root.position.set(p.x, p.y, p.z);
+      root.rotation.y = p.yaw || 0;
+      game.scene.add(root);
+      const proj = B.PROJECTS[i];
+      const Lay = B.layout(proj);
+      const site = { i, plot: p, root, proj, L: Lay, segs: V.trenchSegs(Lay), h: null };
+      site.setHole = (ext) => {
+        if (!ext) { this.terrain.setHole(i, 0, 0, 0, 0); return; }
+        this.terrain.setHole(i, p.x - ext[0], p.z - ext[1], p.x + ext[0], p.z + ext[1]);
+      };
+      return site;
     });
-    this.excavator = makeExcavator();
-    this.crane = makeCrane(19, 26);
-    this.mixer = makeMixer();
-    for (const m of [this.excavator, this.crane, this.mixer]) { m.visible = false; game.scene.add(m); m.traverse((o) => { if (o.isMesh) o.castShadow = true; }); }
-    this.exc = { swing: 0, boom: -0.6, stick: 1.4, bucket: 0.6, full: false };
-    this.cr = { th: Math.PI * 0.85, r: 12, h: 12, carrying: null };
+    // machines and crew (moved to whichever site is being worked on)
+    const scaled = (o, s) => { o.scale.setScalar(s); return o; };
+    this.m = {
+      dozer: makeBulldozer(), excavator: scaled(makeExcavator2(), 0.8), backhoe: makeBackhoe(), tipper: makeTipper(),
+      mixer: scaled(makeMixer2(), 0.9), pump: scaled(makePump(), 0.85), roller: makeRoller(), tripod: makeTripod(), crane: makeCrane(16, 20),
+    };
+    // the backhoe bucket can carry soil too
+    const bd = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 1 }));
+    bd.position.set(0, -0.2, -0.2); bd.visible = false; this.m.backhoe.userData.bucket.add(bd); this.m.backhoe.userData.dirt = bd;
+    for (const k in this.m) { this.m[k].visible = false; this.m[k].traverse((o) => { if (o.isMesh) o.castShadow = true; }); }
+    this.crew = [0, 1, 2, 3].map((k) => { const w = makeWorker(k); w.visible = false; w.userData.goal = null; w.userData.mode = 'idle'; return w; });
+    this.people = [0, 1, 2].map((k) => civilian(makeWorker(k + 4), k));
+    this.inspector = makeWorker(1);
+    this.inspector.children[2].material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
     this.session = null;
+    this.seqs = [];
+    this.particles = [];
     this.pickables = [];
     this.pad = {};
-    this.selectedFitting = null;
-    this.paintColor = PAINT_COLORS[0].hex;
-    this.raycaster = new THREE.Raycaster();
-    this.particles = [];
+    this.focus = V3();
+    this.tmp = V3();
+    this.box3 = new THREE.Box3();
+    this.arrow = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.8, 4), new THREE.MeshStandardMaterial({ color: 0xffc400, emissive: 0xff8a00, emissiveIntensity: 0.6, roughness: 0.4 }));
+    this.arrow.geometry.rotateX(Math.PI);
+    this.arrow.visible = false;
   }
 
   get state() { return this.game.state; }
-  local(i, x, y, z) { const p = this.sites[i].plot; return new THREE.Vector3(p.x + x, p.y + y, p.z + z); }
+  get ps() { return this.state.plots[this.session.i]; }
+  get site() { return this.sites[this.session.i]; }
 
   // ---------- persistent visuals ----------
-  refreshAll() { this.sites.forEach((_, i) => this.refreshPlot(i)); this.placeMachines(); }
-
-  wallMaterial(i, id) {
-    const ps = this.state.plots[i];
-    const col = (ps.colors || {})[id];
-    const key = `${i}:${id}`;
-    this._wm ||= {};
-    let m = this._wm[key];
-    if (!m) { m = this._wm[key] = new THREE.MeshStandardMaterial({ map: TEX.brick, roughness: 0.9 }); }
-    if (col) { m.map = TEX.plaster; m.color.set(col); } else { m.map = TEX.brick; m.color.set(0xffffff); }
-    m.needsUpdate = true;
-    return m;
-  }
-
-  applyLayout(i) { useLayout(this.state.plots[i] && this.state.plots[i].design); }
-  restoreLayout() { if (this.session) this.applyLayout(this.session.i); }
-
+  refreshAll() { this.sites.forEach((_, i) => this.refreshPlot(i)); }
   refreshPlot(i) {
-    this.applyLayout(i);
-    try { this._refreshPlot(i); } finally { this.restoreLayout(); }
-  }
-
-  _refreshPlot(i) {
-    const site = this.sites[i];
-    const ps = this.state.plots[i];
-    const g = site.g;
-    while (g.children.length) g.remove(g.children[0]);
-    site.parts = {};
-    const st = ps.stage, pr = ps.progress || {};
-    const p = site.plot;
+    const site = this.sites[i], ps = this.state.plots[i];
     this.town.setPlotLocked(i, !ps.unlocked);
-    // dirt pad
-    const pad = new THREE.Mesh(new THREE.BoxGeometry(24, 0.1, 22), new THREE.MeshLambertMaterial({ color: st >= 8 ? 0x6aa046 : 0x8a7050 }));
-    pad.position.y = 0.0;
-    pad.receiveShadow = true;
-    g.add(pad);
-    if (!ps.unlocked) { this.terrain.setHole(i, 0, 0, 0, 0); return; }
-    // stage 0: debris
-    if (st === 0) {
-      const r = rng(100 + i);
-      const cleared = pr.cleared || [];
-      for (let k = 0; k < 7; k++) {
-        if (cleared.includes(k)) continue;
-        const x = (r() - 0.5) * 18, z = (r() - 0.5) * 16;
-        const kind = k % 3;
-        let m;
-        if (kind === 0) m = new THREE.Mesh(new THREE.IcosahedronGeometry(1.1, 1), new THREE.MeshLambertMaterial({ color: 0x4f7a2e }));
-        else if (kind === 1) m = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8, 0), new THREE.MeshLambertMaterial({ color: 0x8a8580 }));
-        else m = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 1.0), new THREE.MeshLambertMaterial({ color: 0x8a6a45 }));
-        m.position.set(x, kind === 0 ? 0.7 : 0.5, z);
-        m.rotation.y = r() * 6;
-        m.castShadow = true;
-        m.userData.debris = k;
-        g.add(m);
-        site.parts['debris' + k] = m;
-      }
-    }
-    // pit
-    if (st >= 1) {
-      const scoops = st >= 2 ? 4 : (pr.scoops || 0);
-      const depth = Math.max(0.15, (PIT.depth * scoops) / 4);
-      const pit = new THREE.Mesh(new THREE.BoxGeometry(PIT.hx * 2, depth, PIT.hz * 2), new THREE.MeshLambertMaterial({ color: 0x5e4630, side: THREE.BackSide }));
-      pit.position.y = -depth / 2 + 0.06;
-      pit.receiveShadow = true;
-      g.add(pit);
-      this.terrain.setHole(i, p.x - PIT.hx, p.z - PIT.hz, p.x + PIT.hx, p.z + PIT.hz);
-      pad.geometry = makePadWithHole(PIT);
-      if (st < 3) {
-        const sp = new THREE.Mesh(new THREE.ConeGeometry(3.2, 2.4, 12), new THREE.MeshLambertMaterial({ color: 0x6b4a2e }));
-        sp.position.copy(SPOIL);
-        const k = Math.max(0.15, scoops / 4);
-        sp.scale.set(k, k, k); sp.position.y = 1.2 * k;
-        g.add(sp);
-        site.parts.spoil = sp;
-      }
-    } else this.terrain.setHole(i, 0, 0, 0, 0);
-    // slab
-    if (st >= 2) {
-      const prog = st >= 3 ? 1 : (pr.pour || 0);
-      const slab = new THREE.Mesh(new THREE.BoxGeometry(10.8, 1, 8.8), new THREE.MeshLambertMaterial({ color: 0xa7a59e }));
-      const top = -PIT.depth + (PIT.depth + SLAB_Y) * prog;
-      slab.scale.y = Math.max(0.01, top + PIT.depth);
-      slab.position.y = -PIT.depth + slab.scale.y / 2;
-      slab.receiveShadow = true; slab.castShadow = true;
-      g.add(slab);
-      site.parts.slab = slab;
-    }
-    // walls
-    const placedWalls = st > 3 ? WALLS.map((w) => w.id) : st === 3 ? pr.walls || [] : [];
-    for (const wd of WALLS) {
-      if (!placedWalls.includes(wd.id)) continue;
-      const m = new THREE.Mesh(wallGeometry(wd), this.wallMaterial(i, wd.id));
-      m.position.set(...wd.pos); m.rotation.y = wd.rot;
-      m.castShadow = true; m.receiveShadow = true;
-      m.userData.wall = wd.id;
-      g.add(m);
-      site.parts['wall_' + wd.id] = m;
-    }
-    // roof
-    const placedRoof = st > 4 ? ROOFS.map((r) => r.id) : st === 4 ? pr.roof || [] : [];
-    for (const rd of ROOFS) {
-      if (!placedRoof.includes(rd.id)) continue;
-      g.add(this.roofMesh(rd));
-    }
-    // fittings
-    const placedFit = st > 5 ? FITTINGS.map((f) => f.id) : st === 5 ? pr.fittings || [] : [];
-    for (const f of FITTINGS) if (placedFit.includes(f.id)) g.add(this.fittingMesh(f));
-    // garden
-    const placedGarden = st > 7 ? GARDEN.map((q) => q.id) : st === 7 ? pr.garden || [] : [];
-    for (const gd of GARDEN) if (placedGarden.includes(gd.id)) g.add(this.gardenMesh(gd));
-    if (st >= 8) this.addExtras(g, i);
-  }
-
-  roofMaterial() {
-    if (DESIGN.roof === 'tin') return new THREE.MeshStandardMaterial({ map: TEX.tin, color: 0x4f9a72, roughness: 0.5, metalness: 0.3 });
-    if (DESIGN.roof === 'flat') return new THREE.MeshStandardMaterial({ map: TEX.concrete, color: 0xc9c4b8, roughness: 0.9 });
-    return new THREE.MeshStandardMaterial({ map: TEX.tiles, roughness: 0.8 });
-  }
-
-  // finishing touches that make each building type different
-  addExtras(g, i) {
-    const W = TYPE.w, D = TYPE.d, hw = W / 2, hd = D / 2;
-    const top = SLAB_Y + WALL_H;
-    const l = [];
-    if (TYPE.extra === 'awning') {
-      for (let k = 0; k < 8; k++) box(l, k % 2 ? '#f2efe6' : '#d61f3c', W / 8, 0.08, 1.6, -hw + W / 16 + (k * W) / 8, top - 0.6, hd + 0.75, 0.3);
-    }
-    if (TYPE.extra === 'flag') {
-      cyl(l, '#d8d8d8', 0.06, 0.08, 7, hw + 2, 3.5, hd + 3, 0, 0, 0, 8);
-      box(l, '#f29a1a', 0.04, 0.35, 1.5, hw + 2, 6.5, hd + 3.8);
-      box(l, '#ffffff', 0.04, 0.35, 1.5, hw + 2, 6.15, hd + 3.8);
-      box(l, '#2f8f3a', 0.04, 0.35, 1.5, hw + 2, 5.8, hd + 3.8);
-    }
-    if (DESIGN.roof === 'flat') {
-      box(l, '#d8d2c4', W + 0.6, 0.6, 0.15, 0, top + 0.5, hd + 0.3);
-      box(l, '#d8d2c4', W + 0.6, 0.6, 0.15, 0, top + 0.5, -hd - 0.3);
-      box(l, '#d8d2c4', 0.15, 0.6, D + 0.6, -hw - 0.3, top + 0.5, 0);
-      box(l, '#d8d2c4', 0.15, 0.6, D + 0.6, hw + 0.3, top + 0.5, 0);
-      cyl(l, '#222', 0.6, 0.6, 1.1, hw - 1.2, top + 0.8, -hd + 1.2, 0, 0, 0, 12); // water tank
-    }
-    if (l.length) { const m = new THREE.Mesh(mergeGeos(l), M.vc); m.castShadow = true; g.add(m); }
-    const labels = { house: ['HOME', 'घर', '#2f8f5a'], shop: ['GENERAL STORE', 'किराना दुकान', '#d61f3c'], school: ['SCHOOL', 'विद्यालय', '#b5482f'], clinic: ['CLINIC', 'दवाखाना', '#2f6db5'] };
-    const [en, hi, col] = labels[TYPE.id] || labels.house;
-    const s = this.town.sign(en, hi, TYPE.id === 'house' ? 2.4 : 4, TYPE.id === 'house' ? 0.8 : 1.1, col);
-    s.position.set(TYPE.id === 'house' ? hw * 0.5 : 0, TYPE.id === 'house' ? SLAB_Y + 2.7 : top - 0.15, hd + 0.05);
-    g.add(s);
-    if (TYPE.extra === 'cross') {
-      const c = new THREE.Group();
-      const red = new THREE.MeshBasicMaterial({ color: 0xe02020 });
-      const a = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.35, 0.06), red), b = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.2, 0.06), red);
-      const bg = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 0.04), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-      a.position.z = b.position.z = 0.04;
-      c.add(bg, a, b);
-      c.position.set(hw - 1.6, SLAB_Y + 2.4, hd + 0.08);
-      g.add(c);
-    }
-  }
-
-  roofMesh(rd) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(...rd.size), this.roofMaterial());
-    m.position.set(...rd.pos); m.rotation.x = rd.rotX;
-    m.castShadow = true; m.receiveShadow = true;
-    return m;
-  }
-  fittingTransform(f, obj) {
-    const wd = WALLS.find((w) => w.id === f.wall);
-    const o = new THREE.Object3D();
-    o.position.set(...wd.pos); o.rotation.y = wd.rot;
-    o.updateMatrix();
-    const p = new THREE.Vector3(f.u, f.v + f.h / 2, 0).applyMatrix4(o.matrix);
-    obj.position.copy(p); obj.rotation.y = wd.rot;
-    return obj;
-  }
-  fittingMesh(f) {
-    const m = new THREE.Mesh(fittingGeometry(f), M.vc);
-    m.castShadow = true;
-    return this.fittingTransform(f, m);
-  }
-  gardenMesh(gd) {
-    const m = new THREE.Mesh(gardenGeometry(gd), M.vc);
-    m.position.set(...gd.pos); m.rotation.y = gd.rot;
-    m.castShadow = true;
-    return m;
-  }
-
-  // machines live at the plot currently under construction
-  placeMachines() {
-    const ai = this.session ? this.session.i : L.activePlot(this.state);
-    if (ai >= 0) this.applyLayout(ai);
-    const st = ai >= 0 ? this.state.plots[ai].stage : -1;
-    this.excavator.visible = st === 1;
-    this.mixer.visible = st === 2;
-    this.crane.visible = st === 3 || st === 4;
-    if (ai < 0) return;
-    const p = this.sites[ai].plot;
-    this.excavator.position.set(p.x + EXC_POS.x, p.y, p.z + EXC_POS.z);
-    this.excavator.rotation.y = Math.PI / 2;
-    this.mixer.position.set(p.x, p.y, p.z + 15);
-    this.crane.position.set(p.x + CRANE_POS.x, p.y, p.z + CRANE_POS.z);
-    this.applyExc(); this.applyCrane();
-    this.restoreLayout();
-  }
-
-  applyExc() {
-    const u = this.excavator.userData, e = this.exc;
-    u.upper.rotation.y = e.swing;
-    u.boom.rotation.x = e.boom;
-    u.stick.rotation.x = e.stick;
-    u.bucket.rotation.x = e.bucket;
-    u.dirt.visible = e.full;
-  }
-  hookPos(v = new THREE.Vector3()) {
-    const c = this.cr;
-    return v.set(Math.cos(c.th) * c.r, c.h, Math.sin(c.th) * c.r).add(this.crane.position);
-  }
-  applyCrane() {
-    const u = this.crane.userData, c = this.cr;
-    u.top.rotation.y = -c.th;
-    u.trolley.position.x = c.r;
-    const hp = this.hookPos();
-    u.hook.position.copy(hp).sub(this.crane.position);
-    const top = new THREE.Vector3(Math.cos(c.th) * c.r, u.height + 0.3, Math.sin(c.th) * c.r);
-    const pos = u.cable.geometry.attributes.position;
-    pos.setXYZ(0, top.x, top.y, top.z);
-    pos.setXYZ(1, u.hook.position.x, u.hook.position.y + 0.6, u.hook.position.z);
-    pos.needsUpdate = true;
-    u.cable.geometry.computeBoundingSphere();
-    if (c.carrying) {
-      const obj = c.carrying.obj;
-      obj.position.copy(hp).sub(this.sites[this.session.i].g.position);
-      obj.position.y -= c.carrying.hang;
-    }
+    V.buildSite(site, ps, this.game);
+    if (this.session && this.session.i === i) { for (const k in this.m) if (this.m[k].visible) site.root.add(this.m[k]); for (const w of [...this.crew, ...this.people, this.inspector]) if (w.visible) site.root.add(w); }
   }
 
   // ---------- session ----------
-  canEnter(i) {
-    const ps = this.state.plots[i];
-    return ps && ps.unlocked && !ps.done;
-  }
+  canEnter(i) { const ps = this.state.plots[i]; return !!ps && ps.unlocked && !ps.done; }
 
   enter(i) {
-    this.session = { i, auto: null, t: 0 };
-    this.applyLayout(i);
-    this.paintColor = DESIGN.color || this.paintColor;
-    this.cr.carrying = null;
-    this.exc.full = false;
+    const ps = this.state.plots[i];
+    const proj = B.PROJECTS[i];
+    ps.floors = proj.floors;
+    ps.design ||= { type: proj.id, color: PAINT_COLORS[0].hex };
+    ps.colors ||= { walls: ps.design.color };
+    ps.days ||= 0;
+    this.session = { i, phase: 'learn', t: 0 };
+    this.seqs = [];
     this.refreshPlot(i);
-    this.placeMachines();
-    this.setupStage();
-    const p = this.sites[i].plot;
+    const site = this.sites[i];
+    for (const w of this.crew) { w.visible = true; site.root.add(w); }
+    this.crew.forEach((w, k) => { w.position.set(-3 + k * 2, 0, 12.5); w.rotation.y = Math.PI; w.userData.goal = null; });
     const ob = this.game.rig.orbit;
-    ob.center.set(p.x, p.y + 2, p.z);
-    ob.yaw = 0.5; ob.pitch = 0.6; ob.dist = 42;
+    const c = site.root.position;
+    ob.center.set(c.x, c.y + 2, c.z);
+    ob.yaw = (site.plot.yaw || 0) + 0.55; ob.pitch = 0.55; ob.dist = 34 + site.proj.w;
+    this.setupStage();
   }
 
   exit() {
     if (!this.session) return;
-    if (this.cr.carrying) this.returnCarried();
-    this.clearGhosts();
+    this.finishSeqs();
+    this.hideMachines();
+    for (const w of [...this.crew, ...this.people, this.inspector]) { w.visible = false; w.parent?.remove(w); }
+    for (const p of this.particles) p.m.parent?.remove(p.m);
+    this.particles = [];
+    const i = this.session.i;
     this.session = null;
-    this.game.ui.buildPanel(null);
-    this.refreshAll();
-  }
-
-  clearGhosts() {
-    const site = this.session && this.sites[this.session.i];
-    for (const p of this.pickables) if (p.userData.temp && p.parent) p.parent.remove(p);
     this.pickables = [];
-    if (site) for (const k in site.parts) if (site.parts[k].userData.temp) delete site.parts[k];
+    this.game.ui.buildPanel(null);
+    this.refreshPlot(i);
+    this.game.save();
   }
 
-  stageIdx() { return this.state.plots[this.session.i].stage; }
-  progress() { const ps = this.state.plots[this.session.i]; ps.progress ||= {}; return ps.progress; }
-
-  setupStage() {
-    this.clearGhosts();
-    const i = this.session.i, ps = this.state.plots[i], site = this.sites[i];
-    const st = ps.stage, pr = this.progress();
-    this.session.auto = null;
-    this.selectedFitting = null;
-    if (st >= STAGES.length) { this.game.ui.buildPanel(this.panelInfo()); return; }
-    const ready = L.canWorkStage(ps, st, this.state.rules.realMaterials);
-    if (ready) {
-      if (st === 0) for (const k in site.parts) if (k.startsWith('debris')) this.pickables.push(site.parts[k]);
-      if (st === 3 || st === 4) this.spawnCraneParts();
-      if (st === 5) {
-        for (const f of FITTINGS) if (!(pr.fittings || []).includes(f.id)) {
-          const gm = this.fittingTransform(f, new THREE.Mesh(new THREE.BoxGeometry(f.w, f.h, 0.4), ghostMat));
-          gm.userData = { temp: true, fitting: f };
-          site.g.add(gm); this.pickables.push(gm);
-        }
-      }
-      if (st === 6) for (const wd of WALLS) { const m = site.parts['wall_' + wd.id]; if (m) this.pickables.push(m); }
-      if (st === 7) {
-        for (const gd of GARDEN) if (!(pr.garden || []).includes(gd.id)) {
-          const gm = new THREE.Mesh(gd.kind === 'fence' ? new THREE.BoxGeometry(gd.len, 1.1, 0.4) : gd.kind === 'path' ? new THREE.BoxGeometry(1.5, 0.3, gd.len) : new THREE.CylinderGeometry(0.9, 0.9, 2.4, 10), ghostMat);
-          gm.position.set(gd.pos[0], gd.kind === 'plant' ? 1.2 : gd.kind === 'fence' ? 0.55 : 0.15, gd.pos[2]);
-          gm.rotation.y = gd.rot;
-          gm.userData = { temp: true, garden: gd };
-          site.g.add(gm); this.pickables.push(gm);
-        }
-      }
-    }
-    this.game.ui.buildPanel(this.panelInfo());
+  hideMachines() { for (const k in this.m) { this.m[k].visible = false; this.m[k].parent?.remove(this.m[k]); } }
+  show(name, x, z, yaw = 0, y = 0) {
+    const o = this.m[name];
+    o.visible = true;
+    this.site.root.add(o);
+    o.position.set(x, y, z);
+    o.rotation.y = yaw;
+    return o;
   }
 
-  spawnCraneParts() {
-    const i = this.session.i, site = this.sites[i], pr = this.progress();
+  stageIdx() { return this.ps.stage; }
+  progress() { const ps = this.ps; ps.progress ||= {}; return ps.progress; }
+  lesson() {
     const st = this.stageIdx();
-    const list = st === 3 ? WALLS.filter((w) => !(pr.walls || []).includes(w.id)) : ROOFS.filter((r) => !(pr.roof || []).includes(r.id));
-    this.craneParts = [];
-    list.forEach((d, k) => {
-      const obj = st === 3 ? new THREE.Mesh(wallGeometry(d), this.wallMaterial(i, d.id)) : this.roofMesh(d);
-      obj.castShadow = true;
-      // lying flat in a stack
-      obj.position.set(STACK.x, 0.25 + k * 0.32, STACK.z);
-      obj.rotation.set(st === 3 ? -Math.PI / 2 : 0, 0, 0);
-      obj.userData = { temp: true, craneDef: d, stackIdx: k };
-      site.g.add(obj);
-      // ghost at target
-      const ghost = st === 3 ? new THREE.Mesh(wallGeometry(d), ghostMat) : new THREE.Mesh(new THREE.BoxGeometry(...d.size), ghostMat);
-      if (st === 3) { ghost.position.set(...d.pos); ghost.rotation.y = d.rot; } else { ghost.position.set(...d.pos); ghost.rotation.x = d.rotX; }
-      ghost.userData = { temp: true, ghostFor: d.id };
-      site.g.add(ghost);
-      this.pickables.push(obj, ghost);
-      this.craneParts.push({ def: d, obj, ghost, placed: false, isWall: st === 3 });
-    });
+    const l = LESSONS[st];
+    if (st !== ST.roof) return l;
+    return this.isSlab() ? l.slab : l[this.site.proj.roof];
+  }
+  isSlab() { const ps = this.ps, proj = this.site.proj; return (ps.floor || 0) < proj.floors - 1 || proj.roof === 'flat'; }
+  fact() { const f = this.lesson().facts; return f[(this.session.i + (this.ps.floor || 0)) % f.length]; }
+
+  // ---------- stage setup ----------
+  setupStage() {
+    // a fresh session object for every stage, so timers from the last stage cannot act on this one
+    const s = this.session = { i: this.session.i, t: this.session.t };
+    const ps = this.ps, st = ps.stage;
+    this.finishSeqs();
+    this.hideMachines();
+    this.pickables = [];
+    this.people.forEach((p) => { p.visible = false; p.parent?.remove(p); });
+    this.inspector.visible = false; this.inspector.parent?.remove(this.inspector);
+    Object.assign(s, { phase: 'learn', step: null, choice: null, feedback: null, stars: 3, helped: false, hold: null, gauge: 0, quiz: null, level: null, held: false });
+    this.pad = {};
+    if (st >= STAGES.length) { this.panel(); return; }
+    if (!L.canWorkStage(ps, st, this.state.rules.realMaterials)) { s.phase = 'blocked'; this.panel(); return; }
+    // resume straight into the work if this stage was already started
+    const pr = this.progress();
+    if (pr.choice) { s.choice = pr.choice; this.startWork(); return; }
+    if (!this.lesson().choice) s.choice = 'none';
+    this.idleScene();
+    this.panel();
   }
 
-  panelInfo() {
-    const i = this.session.i, ps = this.state.plots[i], st = ps.stage;
-    const info = { plot: i, stage: st, total: STAGES.length, building: TYPE.name, name: st < STAGES.length ? STAGES[st].name : `${TYPE.name} complete!`, needs: [], hint: '', buttons: [], pad: null, palette: null, parts: null };
-    if (st >= STAGES.length) { info.hint = `This ${TYPE.name.toLowerCase()} is finished! Tap Home to build on another plot, or go for a drive.`; return info; }
+  // machines parked and crew standing by, before the work starts
+  idleScene() {
+    const st = this.stageIdx(), site = this.site;
+    const { hw, hd } = site.L;
+    this.setFocus(0, 1.5, 0);
+    if (st === ST.survey) { this.show('tripod', -hw - 2.5, hd + 3, 0.6); this.crewTo(0, -hw - 3, hd + 3.6, 'idle', -hw, 0); }
+    if (st >= ST.columns && st <= ST.roof) this.show('crane', -hw - 4, -hd - 4, 0);
+  }
+
+  choose(id) {
+    const s = this.session, l = this.lesson();
+    if (s.phase !== 'learn') return;
+    const opt = l.choice.opts.find((o) => o.id === id);
+    if (!opt) return;
+    if (!opt.good) { s.stars = Math.min(s.stars, 2); s.feedback = { good: false, text: opt.why }; s.choice = l.choice.opts.find((o) => o.good).id; this.audio.play('error'); }
+    else { s.feedback = { good: true, text: opt.why }; s.choice = id; this.audio.play('chime'); }
+    s.picked = id;
+    this.panel();
+  }
+
+  startWork() {
+    const s = this.session, st = this.stageIdx(), pr = this.progress();
+    pr.choice = s.choice;
+    s.phase = 'work';
+    s.feedback = null;
+    const site = this.site, { hw, hd } = site.L;
+    const f = this.ps.floor || 0;
+    this.audio.play('click');
+    if (st === ST.survey) {
+      this.show('tripod', -hw - 2.5, hd + 3, 0.6);
+      this.crewTo(0, -hw - 3, hd + 3.6, 'work', -hw, 0);
+      this.crewTo(1, hw + 2, hd + 2.5, 'idle', 0, 0);
+      this.makePegGhosts();
+    } else if (st === ST.clear) {
+      if (s.choice === 'dozer') {
+        this.show('dozer', -10, 14, Math.PI);
+        this.run(this.driveSteps('dozer', [[-10, 14], [-10, -9]], 5, true), () => { s.lane = 0; s.laneT = 0; this.panel(); });
+        s.lane = -1;
+      }
+      this.crewTo(0, 11, 11, 'idle', 0, 0);
+      this.pickables = Object.values(site.h.debris);
+    } else if (st === ST.dig) {
+      s.seg = this.nextSeg();
+      s.mach = s.choice === 'backhoe' ? 'backhoe' : 'excavator';
+      this.show(s.mach, 0, 16, Math.PI);
+      this.show('tipper', -hw - 6, hd + 8, Math.PI * 0.5);
+      if (s.seg != null) this.moveDigger(s.seg);
+      this.crewTo(0, hw + 2, hd + 4, 'idle', 0, 0);
+    } else if (st === ST.steel) {
+      this.makeSegGhosts((k) => !(pr.cages || []).includes(k));
+    } else if (st === ST.footing) {
+      s.wall = this.nextFootWall();
+      this.show('mixer', 0, 18, 0);
+      if (s.wall != null) this.moveMixer(s.wall);
+      this.crewTo(0, hw + 1.5, hd + 1.5, 'work', 0, 0);
+      this.crewTo(1, -hw - 1.5, hd + 1.5, 'work', 0, 0);
+    } else if (st === ST.plinth) {
+      s.step = pr.dpc ? 'done' : (pr.backfill || 0) >= 1 ? 'dpc' : (pr.plinth || 0) >= 1 ? 'fill' : 'build';
+      this.crewAround('work', 0);
+      if (s.step === 'fill') this.show('roller', -hw + 1.5, 0, Math.PI / 2, B.PLINTH * (pr.backfill || 0));
+    } else if (st === ST.columns) {
+      this.show('crane', -hw - 4, -hd - 4, 0);
+      this.show('pump', hw + 3.2, hd + 7, Math.PI);
+      this.foldPump(1);
+      this.pickables = [];
+      for (const c of V.columnSpots(site.L, f)) if (!(pr.cols || []).includes(c.k)) {
+        const gm = V.box(0.6, B.FLOOR_H + 0.3, 0.6, V.mats().ghost, c.x, c.y0 + B.FLOOR_H / 2, c.z);
+        gm.castShadow = false; gm.userData = { col: c };
+        site.root.add(gm); this.pickables.push(gm);
+      }
+      this.crewTo(0, hw + 2, hd + 4, 'idle', 0, 0);
+      s.step = this.pickables.length ? 'pour' : 'strip';
+    } else if (st === ST.walls) {
+      this.show('crane', -hw - 4, -hd - 4, 0);
+      s.step = 'lay';
+      s.checks = [0.3, 0.65].filter((k) => (pr.bricks || 0) / site.h.brickSlots.slots.length < k);
+      this.crewAround('work', B.floorBase(f), true);
+    } else if (st === ST.roof) {
+      this.show('crane', -hw - 4, -hd - 4, 0);
+      const rp = pr.roof ||= {};
+      if (this.isSlab()) s.step = !rp.deck ? 'deck' : !rp.mesh ? 'mesh' : 'pour';
+      else s.step = (rp.gablesK || 0) < 1 ? 'gables' : (rp.trusses || []).length < site.h.pitched.trusses.length ? 'trusses' : 'cover';
+      if (s.step === 'pour') { this.show('pump', hw + 3.2, hd + 7, Math.PI); this.foldPump(1); }
+      if (s.step === 'trusses') this.makeTrussGhosts();
+      this.crewAround('work', B.floorBase(f) + B.FLOOR_H, true);
+    } else if (st === ST.fittings) {
+      this.makeFitGhosts();
+      s.step = this.pickables.length ? 'fit' : 'quiz';
+      if (s.step === 'quiz') this.startQuiz();
+      this.crewAround('work', 0);
+    } else if (st === ST.finish) {
+      s.step = (pr.plaster || []).length < this.skinKeys().length ? 'plaster' : 'paint';
+      s.paintColor = this.ps.colors.walls;
+      this.crewAround('work', 0);
+    } else if (st === ST.handover) {
+      s.step = pr.floorPat ? 'garden' : 'floor';
+      if (s.step === 'garden') this.makeGardenGhosts();
+    }
+    this.panel();
+  }
+
+  // ---------- panel ----------
+  panel() {
+    if (!this.session) return;
+    const s = this.session, ps = this.ps, site = this.site, proj = site.proj;
+    const st = s.phase === 'review' ? s.doneStage : ps.stage;
+    const info = {
+      project: proj, plot: s.i, stage: st, total: STAGES.length, floor: (ps.floor || 0) + 1, floors: proj.floors,
+      name: st < STAGES.length ? (s.phase === 'review' ? `✅ ${STAGES[st].name}` : STAGES[st].name) : `${proj.name} complete!`, day: ps.days || 0, phase: s.phase,
+      needs: [], hint: '', buttons: [], meter: null, card: null, palette: null, quiz: null, stars: null,
+    };
+    if (st >= STAGES.length) { info.hint = 'Finished! Tap Home to start the next building.'; return this.game.ui.buildPanel(info); }
     const need = STAGES[st].need;
     if (this.state.rules.realMaterials) for (const k in need) info.needs.push({ k, name: CARGO[k].name, have: ps.site[k] || 0, need: need[k], color: CARGO[k].color });
-    const ready = L.canWorkStage(ps, st, this.state.rules.realMaterials);
-    const assisted = this.game.settings.assisted;
-    if (!ready) {
-      info.hint = 'This stage needs more materials. Load them at the warehouse with the truck and unload them here.';
-      return info;
+    if (s.phase === 'blocked') {
+      info.hint = 'This stage needs more materials. Bring them by goods train, load the truck at the warehouse and unload here.';
+      return this.game.ui.buildPanel(info);
     }
-    const pr = ps.progress || {};
+    if (s.phase === 'learn') {
+      const l = this.lesson();
+      info.card = { fact: this.fact(), task: l.task || '', q: l.choice?.q, opts: l.choice?.opts.map((o) => ({ id: o.id, label: o.label, sel: s.picked === o.id, good: s.picked === o.id ? !!o.good : null })), feedback: s.feedback };
+      if (s.choice) info.buttons.push({ id: 'start', label: "Let's build! ▶", primary: true });
+      return this.game.ui.buildPanel(info);
+    }
+    if (s.phase === 'review') {
+      info.stars = s.stars;
+      info.hint = s.review;
+      info.buttons.push({ id: 'next', label: s.nextLabel || 'Next stage ▶', primary: true });
+      return this.game.ui.buildPanel(info);
+    }
+    // work
+    const pr = this.progress();
+    const help = { id: 'help', label: '🤝 Help me' };
     switch (st) {
-      case 0: info.hint = 'Tap the bushes, rocks and junk to clear the plot.'; info.buttons.push({ id: 'auto', label: 'Clear all for me' }); break;
-      case 1:
-        info.hint = this.exc.full ? 'Swing to the brown spoil pile and dump the bucket.' : `Swing to the pit, lower the boom and curl the bucket to dig. Scoops: ${pr.scoops || 0}/4`;
-        info.pad = 'excavator';
-        info.buttons.push({ id: 'auto', label: assisted ? 'Dig for me' : 'Auto dig' });
+      case ST.survey: info.hint = `Tap peg ${(pr.pegs || 0) + 1} (the glowing one with that number).`; info.buttons.push(help); break;
+      case ST.clear:
+        if (s.choice === 'dozer') { info.hint = 'Hold PUSH to drive the bulldozer across the plot.'; info.buttons.push({ id: 'hold', label: '🚜 PUSH', hold: true, primary: true }); }
+        else info.hint = 'Tap a bush, rock or piece of junk — a worker will carry it away.';
+        info.meter = { label: 'Cleared', v: this.clearRatio() };
+        info.buttons.push(help);
         break;
-      case 2: info.hint = `Hold "Pour" to fill the foundation with concrete. ${Math.round((pr.pour || 0) * 100)}%`; info.buttons.push({ id: 'pour', label: 'Hold to pour', hold: true }); if (assisted) info.buttons.push({ id: 'auto', label: 'Pour for me' }); break;
-      case 3: case 4: {
-        const what = st === 3 ? 'wall panel' : 'roof half';
-        info.hint = this.cr.carrying ? `Move the ${what} over its green outline and lower it. Press Grab/Release to set it down.` : `Move the hook over the stack, lower it and press Grab to lift a ${what}.`;
-        info.pad = 'crane';
-        info.buttons.push({ id: 'auto', label: assisted ? 'Place one for me' : 'Auto place one' });
+      case ST.dig:
+        info.hint = s.seg == null ? 'All trenches dug!' : 'Hold DIG and let go in the green zone (1 m deep).';
+        info.meter = { label: 'Depth', v: s.gauge, lo: 0.62, hi: 0.78, marks: ['0', '1 m', '1.5 m'] };
+        info.buttons.push({ id: 'hold', label: '⛏️ DIG', hold: true, primary: true }, help);
+        info.sub = `Trench ${(pr.dug || []).length}/${site.segs.length}`;
+        break;
+      case ST.steel: info.hint = 'Tap a glowing trench to lower a steel cage into it.'; info.sub = `Cages ${(pr.cages || []).length}/${site.segs.length}`; info.buttons.push(help); break;
+      case ST.footing:
+        info.hint = s.wall == null ? 'Footings poured!' : 'Hold POUR and let go when the concrete reaches the green line.';
+        info.meter = { label: 'Concrete', v: s.gauge, lo: 0.42, hi: 0.58 };
+        info.buttons.push({ id: 'hold', label: '🪣 POUR', hold: true, primary: true }, help);
+        break;
+      case ST.plinth:
+        if (s.step === 'build') { info.hint = 'Hold BUILD to raise the brick plinth wall.'; info.meter = { label: 'Plinth', v: pr.plinth || 0 }; info.buttons.push({ id: 'hold', label: '🧱 BUILD', hold: true, primary: true }); }
+        else if (s.step === 'fill') { info.hint = 'Hold ROLL to fill the trenches with soil and press it hard.'; info.meter = { label: 'Filled', v: pr.backfill || 0 }; info.buttons.push({ id: 'hold', label: '🛞 ROLL', hold: true, primary: true }); }
+        else { info.hint = 'Tap to lay the black damp-proof layer.'; info.buttons.push({ id: 'dpc', label: '⬛ Lay damp-proof layer', primary: true }); }
+        info.buttons.push(help);
+        break;
+      case ST.columns:
+        if (s.step === 'pour') { info.hint = 'Tap a glowing column to pump concrete into it.'; info.sub = `Columns ${(pr.cols || []).length}/${site.L.cols.length}`; }
+        else { info.hint = 'Seven days of curing are over. Take off the wooden shuttering!'; info.buttons.push({ id: 'strip', label: '🪵 Remove shuttering', primary: true }); }
+        info.buttons.push(help);
+        break;
+      case ST.walls: {
+        const n = pr.bricks || 0, tot = site.h.brickSlots.slots.length;
+        if (s.level) { info.hint = 'Tap CHECK when the bubble is in the middle!'; info.meter = { label: 'Spirit level', v: s.level.v, lo: 0.43, hi: 0.57, bubble: true }; info.buttons.push({ id: 'check', label: '🎯 CHECK', primary: true }); }
+        else { info.hint = 'Hold LAY BRICKS to build the walls row by row.'; info.meter = { label: 'Bricks', v: n / tot }; info.buttons.push({ id: 'hold', label: '🧱 LAY BRICKS', hold: true, primary: true }); }
+        info.sub = `${Math.floor(Math.min(n, tot))} of ${tot} bricks`;
+        info.buttons.push(help);
         break;
       }
-      case 5:
-        info.hint = this.selectedFitting ? `Now tap a glowing ${this.selectedFitting} slot on the walls.` : 'Pick a door or window, then tap where it goes.';
-        info.parts = [{ id: 'door', label: 'Door' }, { id: 'window', label: 'Window' }];
-        info.selected = this.selectedFitting;
-        if (assisted) info.buttons.push({ id: 'auto', label: 'Fit all for me' });
+      case ST.roof: {
+        const rp = pr.roof || {};
+        if (s.step === 'deck') { info.hint = 'Tap to put up the props and the wooden deck.'; info.buttons.push({ id: 'deck', label: '🪵 Props and deck', primary: true }); }
+        else if (s.step === 'mesh') { info.hint = 'Tap to tie the steel mesh on the deck.'; info.buttons.push({ id: 'mesh', label: '🔩 Tie steel mesh', primary: true }); }
+        else if (s.step === 'pour') { info.hint = 'Hold POUR to fill the slab with concrete.'; info.meter = { label: 'Slab', v: rp.pour || 0 }; info.buttons.push({ id: 'hold', label: '🪣 POUR', hold: true, primary: true }); }
+        else if (s.step === 'gables') { info.hint = 'Hold BUILD to raise the triangle gable walls.'; info.meter = { label: 'Gables', v: rp.gablesK || 0 }; info.buttons.push({ id: 'hold', label: '🧱 BUILD', hold: true, primary: true }); }
+        else if (s.step === 'trusses') { info.hint = 'Tap a glowing spot — the crane lifts a timber truss there.'; info.sub = `Trusses ${(rp.trusses || []).length}/${site.h.pitched.trusses.length}`; }
+        else { const t = site.proj.roof === 'tin' ? 'FIX SHEETS' : 'LAY TILES'; info.hint = `Hold ${t} to cover the roof.`; info.meter = { label: 'Roof', v: rp.cover || 0 }; info.buttons.push({ id: 'hold', label: `🏠 ${t}`, hold: true, primary: true }); }
+        info.buttons.push(help);
         break;
-      case 6:
-        info.hint = 'Choose a colour, then tap each wall to paint it.';
-        info.palette = PAINT_COLORS; info.paintColor = this.paintColor;
-        info.buttons.push({ id: 'auto', label: 'Paint all walls' });
+      }
+      case ST.fittings:
+        if (s.step === 'fit') { info.hint = 'Tap a glowing opening to fit a door or window.'; info.sub = `Fitted ${(pr.fit || []).length}/${V.openings(site.L).length}`; info.buttons.push(help); }
+        else if (s.quiz) info.quiz = { q: s.quiz.q, opts: s.quiz.opts.map((o) => ({ id: o.id, label: o.label })), feedback: s.feedback };
         break;
-      case 7: info.hint = 'Tap the green outlines to build the fence, path and plant saplings.'; info.buttons.push({ id: 'auto', label: 'Finish garden for me' }); break;
+      case ST.finish:
+        if (s.step === 'plaster') { info.hint = 'Swipe your finger across each wall to plaster it.'; info.sub = `Walls plastered ${(pr.plaster || []).length}/${this.skinKeys().length}`; }
+        else { info.hint = 'Pick a colour, then swipe across the walls to paint.'; info.palette = PAINT_COLORS; info.paintColor = s.paintColor; info.sub = `Walls painted ${(pr.paint || []).length}/${this.skinKeys().length}`; }
+        info.buttons.push(help);
+        break;
+      case ST.handover:
+        if (s.step === 'floor') { info.hint = 'Choose the floor tiles.'; info.choices = V.FLOOR_PATTERNS.map((p) => ({ id: `floor:${p.id}`, label: p.name })); }
+        else if (s.step === 'garden') { info.hint = 'Tap the glowing spots to finish the garden.'; info.sub = `Garden ${(pr.garden || []).length}/8`; info.buttons.push(help); }
+        else if (s.step === 'inspect') { info.hint = 'The inspector is checking the building…'; info.checklist = INSPECTION.map((t, k) => ({ t, ok: k < (s.checked || 0) })); }
+        else if (s.step === 'open') { info.hint = 'Everything passed! Open the doors for the new owners.'; info.checklist = INSPECTION.map((t) => ({ t, ok: true })); info.buttons.push({ id: 'open', label: '🎉 Open the doors!', primary: true }); }
+        break;
     }
-    return info;
+    this.game.ui.buildPanel(info);
   }
 
+  // ---------- input ----------
   onButton(id, down = true) {
     if (!this.session) return;
-    if (id === 'pour') { this.pad.pour = down; return; }
-    if (!down) return;
-    if (id === 'auto') this.startAuto();
-    else if (id === 'grab') this.craneGrab();
-    else if (id.startsWith('part:')) { this.selectedFitting = id.slice(5); this.game.ui.buildPanel(this.panelInfo()); this.audio.play('click'); }
-    else if (id.startsWith('color:')) { this.paintColor = id.slice(6); this.game.ui.buildPanel(this.panelInfo()); this.audio.play('click'); }
-  }
-  setPad(name, v) { this.pad[name] = v; }
-
-  startAuto() {
-    const st = this.stageIdx();
-    if (!L.canWorkStage(this.state.plots[this.session.i], st, this.state.rules.realMaterials)) return;
-    this.session.auto = { st, step: 0, t: 0 };
-  }
-
-  // ---------- picking ----------
-  pick(raycaster) {
-    if (!this.session || !this.pickables.length) return false;
-    const hits = raycaster.intersectObjects(this.pickables, false);
-    if (!hits.length) return false;
-    this.handlePick(hits[0].object);
-    return true;
-  }
-  handlePick(obj) {
-    const st = this.stageIdx();
-    const ud = obj.userData;
-    const pr = this.progress();
-    if (st === 0 && ud.debris !== undefined) this.clearDebris(obj);
-    else if (st === 5 && ud.fitting) {
-      const f = ud.fitting;
-      const assisted = this.game.settings.assisted;
-      if (!this.selectedFitting && !assisted) { this.game.ui.toast('First pick a Door or Window from the panel.'); this.audio.play('error'); return; }
-      if (this.selectedFitting && this.selectedFitting !== f.type) { this.game.ui.toast(`That opening needs a ${f.type}.`); this.audio.play('error'); return; }
-      this.installFitting(obj);
-    } else if (st === 6 && ud.wall) this.paintWall(ud.wall);
-    else if (st === 7 && ud.garden) this.placeGarden(obj);
-    else if ((st === 3 || st === 4) && (ud.craneDef || ud.ghostFor) && !this.cr.carrying) {
-      // tapping a part or outline in assisted mode starts the crane helper
-      if (this.game.settings.assisted) this.startAuto();
-      else this.game.ui.toast('Use the crane controls, or switch on Helper mode in Settings.');
-    }
-    void pr;
-  }
-
-  clearDebris(obj) {
-    const pr = this.progress();
-    pr.cleared ||= [];
-    if (pr.cleared.includes(obj.userData.debris)) return;
-    pr.cleared.push(obj.userData.debris);
-    this.pickables = this.pickables.filter((p) => p !== obj);
-    this.audio.play('rustle');
-    this.animate(obj, 0.4, (k) => { obj.scale.setScalar(1 - k); obj.position.y += 0.02; }, () => obj.parent && obj.parent.remove(obj));
-    this.puff(obj.getWorldPosition(new THREE.Vector3()), 0x9a8a6a);
-    if (pr.cleared.length >= 7) this.finishStage();
-    else this.game.save();
-  }
-
-  installFitting(ghost) {
-    const f = ghost.userData.fitting, pr = this.progress();
-    pr.fittings ||= [];
-    if (pr.fittings.includes(f.id)) return;
-    pr.fittings.push(f.id);
-    this.pickables = this.pickables.filter((p) => p !== ghost);
-    ghost.parent.remove(ghost);
-    const m = this.fittingMesh(f);
-    const site = this.sites[this.session.i];
-    site.g.add(m);
-    const target = m.position.clone();
-    m.position.add(new THREE.Vector3(0, 3, 0));
-    this.animate(m, 0.45, (k) => m.position.lerpVectors(target.clone().add(new THREE.Vector3(0, 3, 0)), target, k * k), () => this.audio.play('snap'));
-    if (pr.fittings.length >= FITTINGS.length) setTimeout(() => this.finishStage(5), 500);
-    else { this.game.save(); this.game.ui.buildPanel(this.panelInfo()); }
-  }
-
-  paintWall(id) {
-    const i = this.session.i, ps = this.state.plots[i], pr = this.progress();
-    pr.painted ||= [];
-    ps.colors ||= {};
-    const mtl = this._wm[`${i}:${id}`];
-    const from = mtl.color.clone();
-    ps.colors[id] = this.paintColor;
-    const to = new THREE.Color(this.paintColor);
-    mtl.map = TEX.plaster; mtl.needsUpdate = true;
-    this.game.machineAudio.spray = true;
-    this.animate(mtl, 0.8, (k) => mtl.color.lerpColors(from.equals(new THREE.Color(1, 1, 1)) ? new THREE.Color(0.85, 0.5, 0.4) : from, to, k), () => { this.game.machineAudio.spray = false; });
-    const wd = WALLS.find((w) => w.id === id);
-    this.puff(this.local(i, wd.pos[0], 2, wd.pos[2]), to.getHex());
-    if (!pr.painted.includes(id)) pr.painted.push(id);
-    if (pr.painted.length >= WALLS.length) setTimeout(() => this.finishStage(6), 900);
-    else this.game.save();
-  }
-
-  placeGarden(ghost) {
-    const gd = ghost.userData.garden, pr = this.progress();
-    pr.garden ||= [];
-    if (pr.garden.includes(gd.id)) return;
-    pr.garden.push(gd.id);
-    this.pickables = this.pickables.filter((p) => p !== ghost);
-    ghost.parent.remove(ghost);
-    const m = this.gardenMesh(gd);
-    this.sites[this.session.i].g.add(m);
-    this.animate(m, 0.5, (k) => m.scale.set(1, Math.max(0.01, k), 1), () => this.audio.play('snap'));
-    if (pr.garden.length >= GARDEN.length) setTimeout(() => this.finishStage(7), 600);
-    else this.game.save();
-  }
-
-  finishStage(expected) {
-    if (!this.session) return;
-    const i = this.session.i;
-    const st = this.state.plots[i].stage;
-    if (expected !== undefined && st !== expected) return;
-    const res = L.completeStage(this.state, i, st);
-    if (!res) { this.game.ui.toast('Something is missing for this stage.'); return; }
-    this.game.onStageComplete(i, res);
-    this.cr.carrying = null;
-    this.refreshPlot(i);
-    this.placeMachines();
-    this.setupStage();
-  }
-
-  returnCarried() {
-    const c = this.cr.carrying;
-    if (!c) return;
-    c.obj.position.set(STACK.x, 0.25 + c.stackIdx * 0.32, STACK.z);
-    c.obj.rotation.set(c.isWall ? -Math.PI / 2 : 0, 0, 0);
-    this.cr.carrying = null;
-  }
-
-  craneGrab() {
-    const st = this.stageIdx();
-    if (st !== 3 && st !== 4) return;
-    const site = this.sites[this.session.i];
-    const hook = this.hookPos().sub(site.g.position);
-    if (this.cr.carrying) {
-      const c = this.cr.carrying;
-      const d = c.def;
-      const target = new THREE.Vector3(...d.pos);
-      const bottom = c.obj.position.y;
-      const horiz = Math.hypot(c.obj.position.x - target.x, c.obj.position.z - target.z);
-      if (horiz < 3.2 && bottom < target.y + 3.2) {
-        // snap into place
-        const from = c.obj.position.clone();
-        const obj = c.obj;
-        this.cr.carrying = null;
-        this.animate(obj, 0.5, (k) => obj.position.lerpVectors(from, target, k), () => {
-          this.audio.play('snap');
-          const pr = this.progress();
-          const key = st === 3 ? 'walls' : 'roof';
-          pr[key] ||= [];
-          if (!pr[key].includes(d.id)) pr[key].push(d.id);
-          const cp = this.craneParts.find((p) => p.def.id === d.id);
-          if (cp) { cp.placed = true; cp.ghost.parent && cp.ghost.parent.remove(cp.ghost); }
-          this.pickables = this.pickables.filter((p) => p !== obj && p !== cp?.ghost);
-          const need = st === 3 ? WALLS.length : ROOFS.length;
-          if (pr[key].length >= need) this.finishStage(st);
-          else { this.game.save(); this.game.ui.buildPanel(this.panelInfo()); }
-        });
-        if (st === 3) obj.rotation.set(0, d.rot, 0); else obj.rotation.set(d.rotX, 0, 0);
-      } else {
-        this.game.ui.toast('Not over the outline - the part goes back to the stack.');
-        this.returnCarried();
-        this.audio.play('error');
+    const s = this.session;
+    if (id === 'hold' || id === 'grab' || id === 'primary') {
+      if (id !== 'hold') {
+        // keyboard: Space acts on the main button
+        const ui = this.game.ui._bpPrimary;
+        if (ui && ui.hold) { this.onButton('hold', down); return; }
+        if (down && ui) this.onButton(ui.id, true);
+        return;
       }
-      this.game.ui.buildPanel(this.panelInfo());
+      if (s.phase !== 'work') return;
+      if (down && !s.held) this.holdStart();
+      if (!down && s.held) this.holdEnd();
+      s.held = down;
       return;
     }
-    // try to pick the top unplaced part of the stack
-    const avail = (this.craneParts || []).filter((p) => !p.placed);
-    if (!avail.length) return;
-    const top = avail.reduce((a, b) => (a.obj.position.y > b.obj.position.y ? a : b));
-    const pp = top.obj.position;
-    if (Math.hypot(hook.x - pp.x, hook.z - pp.z) < 3 && hook.y < pp.y + 3.2) {
-      this.cr.carrying = { obj: top.obj, def: top.def, hang: top.isWall ? WALL_H + (top.def.gable ? RIDGE : 0) + 0.9 : 1.0, stackIdx: top.obj.userData.stackIdx, isWall: top.isWall };
-      if (top.isWall) top.obj.rotation.set(0, top.def.rot, 0); else top.obj.rotation.set(top.def.rotX, 0, 0);
-      this.audio.play('clank');
-      this.applyCrane();
-      this.game.ui.buildPanel(this.panelInfo());
-    } else {
-      this.game.ui.toast('Lower the hook right above the stack of parts first.');
-      this.audio.play('error');
-    }
+    if (!down) return;
+    if (id === 'start' && s.phase === 'learn' && s.choice) return this.startWork();
+    if (id === 'next' && s.phase === 'review') return this.afterReview();
+    if (id.startsWith('opt:')) return this.choose(id.slice(4));
+    if (id.startsWith('quiz:')) return this.answerQuiz(id.slice(5));
+    if (id.startsWith('color:')) { s.paintColor = id.slice(6); this.audio.play('click'); this.panel(); return; }
+    if (id.startsWith('floor:')) return this.pickFloor(id.slice(6));
+    if (s.phase !== 'work' || this.busy()) return;
+    if (id === 'help') return this.help();
+    if (id === 'dpc') return this.layDpc();
+    if (id === 'strip') return this.stripShutters();
+    if (id === 'deck') return this.slabDeck();
+    if (id === 'mesh') return this.slabMesh();
+    if (id === 'check') return this.levelCheck();
+    if (id === 'open') return this.openDoors();
+  }
+  setPad(name, v) { this.pad[name] = v; }
+  busy() { return this.seqs.some((q) => q.block); }
+
+  holdStart() {
+    const s = this.session, st = this.stageIdx();
+    if (this.busy()) return;
+    if (st === ST.dig && s.seg != null) { s.gauge = 0; this.audio.play('click'); }
+    if (st === ST.footing && s.wall != null) { s.gauge = this.wallFill(s.wall); this.m.mixer.userData.stream.visible = true; }
+  }
+  holdEnd() {
+    const s = this.session, st = this.stageIdx();
+    if (st === ST.dig && s.seg != null && s.gauge > 0.05) this.digRelease();
+    if (st === ST.footing && s.wall != null) { this.m.mixer.userData.stream.visible = false; this.pourRelease(); }
   }
 
-  // ---------- per-frame ----------
-  update(dt, keys) {
-    this.updateAnims(dt);
-    const ma = this.game.machineAudio;
-    ma.hyd = 0; ma.crane = 0; ma.pour = false;
-    ma.idle = this.session && (this.excavator.visible || this.mixer.visible || this.crane.visible);
-    // mixer drum always turns when visible
-    if (this.mixer.visible) this.mixer.userData.drum.rotation.z += dt * (this.pad.pour ? 4 : 1);
-    if (!this.session) return;
-    const st = this.stageIdx();
-    const ps = this.state.plots[this.session.i];
-    if (!L.canWorkStage(ps, st, this.state.rules.realMaterials)) return;
-    const k = (code) => keys.has(code);
-    const auto = this.session.auto;
-    if (st === 0 && auto) {
-      auto.t -= dt;
-      if (auto.t <= 0) {
-        auto.t = 0.35;
-        const next = this.pickables.find((p) => p.userData.debris !== undefined);
-        if (next) this.clearDebris(next);
-      }
-    }
-    if (st === 1) this.updateExcavator(dt, k, auto);
-    if (st === 2) {
-      const pr = this.progress();
-      const pouring = this.pad.pour || k('Space') || (auto && auto.st === 2);
-      if (pouring) {
-        pr.pour = Math.min(1, (pr.pour || 0) + dt / 6);
-        ma.pour = true;
-        const slab = this.sites[this.session.i].parts.slab;
-        const top = -PIT.depth + (PIT.depth + SLAB_Y) * pr.pour;
-        if (slab) { slab.scale.y = Math.max(0.01, top + PIT.depth); slab.position.y = -PIT.depth + slab.scale.y / 2; }
-        else this.refreshPlot(this.session.i);
-        this._pourUi = (this._pourUi || 0) + dt;
-        if (this._pourUi > 0.25) { this._pourUi = 0; this.game.ui.buildPanel(this.panelInfo()); }
-        if (Math.random() < dt * 10) this.puff(this.local(this.session.i, (Math.random() - 0.5) * 8, top + 0.2, (Math.random() - 0.5) * 6), 0xa7a59e, 0.6);
-        if (pr.pour >= 1) { this.pad.pour = false; this.finishStage(2); }
-      }
-    }
-    if (st === 3 || st === 4) this.updateCrane(dt, k, auto);
-    if (auto && (st === 5 || st === 6 || st === 7)) {
-      auto.t -= dt;
-      if (auto.t <= 0) {
-        auto.t = 0.45;
-        if (st === 5) { const g = this.pickables.find((p) => p.userData.fitting); if (g) { this.selectedFitting = g.userData.fitting.type; this.installFitting(g); } }
-        if (st === 6) { const pr = this.progress(); const w = WALLS.find((x) => !(pr.painted || []).includes(x.id)); if (w) this.paintWall(w.id); }
-        if (st === 7) { const g = this.pickables.find((p) => p.userData.garden); if (g) this.placeGarden(g); }
-      }
-    }
+  // taps on the 3D site
+  pick(raycaster) {
+    if (!this.session || this.session.phase !== 'work' || !this.pickables.length || this.busy()) return false;
+    const hits = raycaster.intersectObjects(this.pickables, true);
+    if (!hits.length) return false;
+    let o = hits[0].object;
+    while (o && !Object.keys(o.userData || {}).some((k) => ['debris', 'peg', 'seg', 'col', 'truss', 'fit', 'garden'].includes(k))) o = o.parent;
+    if (!o) return false;
+    const u = o.userData;
+    if (u.peg != null) this.tapPeg(u.peg, o);
+    else if (u.debris) this.tapDebris(u.debris, o);
+    else if (u.seg) this.tapCage(u.seg, o);
+    else if (u.col) this.tapColumn(u.col, o);
+    else if (u.truss != null) this.tapTruss(u.truss, o);
+    else if (u.fit) this.tapFit(u.fit, o);
+    else if (u.garden) this.tapGarden(u.garden, o);
+    return true;
   }
 
-  updateExcavator(dt, k, auto) {
-    const e = this.exc, rate = 0.8;
-    const before = [e.swing, e.boom, e.stick, e.bucket];
-    if (auto) {
-      const seq = [
-        { swing: 0, boom: -0.5, stick: 1.2, bucket: -0.2 },
-        { swing: 0, boom: 0.25, stick: 1.6, bucket: -0.3 },
-        { swing: 0, boom: 0.25, stick: 1.6, bucket: 1.3 },
-        { swing: 0, boom: -0.6, stick: 1.3, bucket: 1.3 },
-        { swing: Math.PI / 2, boom: -0.6, stick: 1.3, bucket: 1.3 },
-        { swing: Math.PI / 2, boom: -0.25, stick: 1.2, bucket: 1.3 },
-        { swing: Math.PI / 2, boom: -0.25, stick: 1.2, bucket: -1.1 },
-      ];
-      const tgt = seq[auto.step % seq.length];
-      let done = true;
-      for (const key of ['swing', 'boom', 'stick', 'bucket']) {
-        const d = tgt[key] - e[key];
-        if (Math.abs(d) > 0.01) done = false;
-        e[key] += clamp(d, -rate * 1.5 * dt, rate * 1.5 * dt);
-      }
-      if (done) auto.step++;
-    } else {
-      const p = this.pad;
-      if (k('KeyA') || p.swingL) e.swing += rate * dt;
-      if (k('KeyD') || p.swingR) e.swing -= rate * dt;
-      if (k('KeyW') || p.boomUp) e.boom -= rate * 0.6 * dt;
-      if (k('KeyS') || p.boomDown) e.boom += rate * 0.6 * dt;
-      if (k('KeyQ') || p.stickOut) e.stick -= rate * dt;
-      if (k('KeyE') || p.stickIn) e.stick += rate * dt;
-      if (k('KeyR') || p.curl) e.bucket += rate * 1.4 * dt;
-      if (k('KeyF') || p.dump) e.bucket -= rate * 1.4 * dt;
-    }
-    e.boom = clamp(e.boom, -0.9, 0.6);
-    e.stick = clamp(e.stick, 0.2, 2.2);
-    e.bucket = clamp(e.bucket, -1.2, 1.6);
-    const moved = Math.abs(before[0] - e.swing) + Math.abs(before[1] - e.boom) + Math.abs(before[2] - e.stick) + Math.abs(before[3] - e.bucket);
-    this.game.machineAudio.hyd = Math.min(1, moved / dt / 1.2);
-    this.applyExc();
-    // dig / dump rules
-    const tip = this.excavator.userData.tip.getWorldPosition(new THREE.Vector3());
-    const site = this.sites[this.session.i];
-    const lp = tip.clone().sub(site.g.position);
+  // swipe painting on the walls
+  pointerDown(rc) {
+    if (!this.session || this.session.phase !== 'work' || this.stageIdx() !== ST.finish) return false;
+    const hit = this.skinHit(rc);
+    if (!hit) return false;
+    this.painting = true;
+    this.paintAt(hit);
+    return true;
+  }
+  pointerMove(rc) { if (this.painting) { const hit = this.skinHit(rc); if (hit) this.paintAt(hit); } }
+  pointerUp() { if (this.painting) { this.painting = false; this.checkSkins(); } }
+
+  // ================= stage work =================
+  // ---- survey ----
+  makePegGhosts() {
+    const h = this.site.h, pr = this.progress();
+    this.pickables = [];
+    h.pegPts.forEach(([x, z], k) => {
+      if (k < (pr.pegs || 0)) return;
+      const g = new THREE.Group();
+      g.position.set(x, 0, z);
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 1.6, 14), k === (pr.pegs || 0) ? V.mats().hot : V.mats().ghost);
+      m.position.y = 0.8; g.add(m);
+      const lbl = label(String(k + 1)); lbl.position.y = 2.2; g.add(lbl);
+      g.userData = { peg: k };
+      this.site.root.add(g); this.pickables.push(g);
+    });
+  }
+  tapPeg(k, obj) {
+    const pr = this.progress(), s = this.session;
+    if (k !== (pr.pegs || 0)) { s.stars = Math.max(1, s.stars - 1); this.toast(`Not yet — find peg ${(pr.pegs || 0) + 1} first.`); this.audio.play('error'); return; }
+    this.pickables.forEach((p) => p.parent?.remove(p));
+    this.pickables = [];
+    pr.pegs = k + 1;
+    const [x, z] = this.site.h.pegPts[k];
+    this.crewTo(1, x + 0.6, z + 0.6, 'work', x, z);
+    this.audio.play('thud');
+    this.puff(V3(x, 0.2, z), 0xc8b090, 4);
+    V.buildSite(this.site, this.ps, this.game); this.reattach();
+    this.makePegGhosts();
+    this.setFocus(x, 0.5, z);
+    if (pr.pegs >= 4) this.done('All four corners are marked and the diagonals are equal — the corners are square!');
+    else this.panel();
+  }
+
+  // ---- clear ----
+  clearRatio() { const n = V.debrisList(this.session.i).length; return (this.progress().cleared || []).length / n; }
+  tapDebris(d, obj) {
+    const s = this.session;
+    if (s.choice === 'dozer') { this.toast('Hold PUSH to drive the bulldozer.'); return; }
+    if (obj.userData.taken) return;
+    obj.userData.taken = true;
+    const k = this.freeWorker();
+    const w = this.crew[k];
+    this.crewTo(k, d.x + 0.8, d.z + 0.8, 'walk', d.x, d.z);
+    this.run([
+      { until: () => !w.userData.goal, fn: () => {} },
+      { dur: 0.8, start: () => { w.userData.mode = 'work'; this.audio.play('thud'); }, fn: () => {} },
+      { dur: 0.6, fn: (e) => { obj.scale.setScalar(1 - e); obj.position.y = e * 0.8; }, end: () => { obj.parent?.remove(obj); this.removeDebris(d.k); } },
+    ], null, false);
+  }
+  removeDebris(k) {
     const pr = this.progress();
-    if (!e.full && Math.abs(lp.x) < PIT.hx - 0.2 && Math.abs(lp.z) < PIT.hz - 0.2 && lp.y < 0.3 && e.bucket > 0.6) {
-      e.full = true;
-      this.audio.play('dig');
-      this.puff(tip, 0x6b4a2e);
-      this.game.ui.buildPanel(this.panelInfo());
+    pr.cleared ||= [];
+    if (!pr.cleared.includes(k)) pr.cleared.push(k);
+    delete this.site.h.debris[k];
+    this.pickables = Object.values(this.site.h.debris);
+    this.puff(V3(0, 0, 0), 0xb89a70, 0);
+    this.panel();
+    if (this.clearRatio() >= 1) this.done('The plot is clean and ready. The ground is bare soil now.');
+  }
+  updateClear(dt) {
+    const s = this.session;
+    if (s.choice !== 'dozer' || s.lane < 0 || this.busy()) return;
+    const dz = this.m.dozer;
+    const lanes = [-8, -4.5, -1, 2.5, 6, 9];
+    if (!s.held) { dz.userData.blade.position.y = lerp(dz.userData.blade.position.y, 0.2, dt * 4); return; }
+    dz.userData.blade.position.y = lerp(dz.userData.blade.position.y, 0, dt * 6);
+    const z = lanes[s.lane];
+    const dir = s.lane % 2 ? -1 : 1;
+    const x0 = -10.5 * dir, x1 = 10.5 * dir;
+    s.laneT = Math.min(1, s.laneT + dt * 0.28);
+    dz.position.set(lerp(x0, x1, s.laneT), 0, z);
+    dz.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    this.engine(dt);
+    if (Math.random() < dt * 6) this.puff(V3(dz.position.x + dir * 2.4, 0.3, z), 0xc2a27a, 1);
+    // debris in front of the blade is pushed along, then off the plot
+    for (const k in this.site.h.debris) {
+      const o = this.site.h.debris[k];
+      const ahead = (o.position.x - dz.position.x) * dir;
+      if (Math.abs(o.position.z - z) < 1.9 && ahead > 0 && ahead < 2.6) { o.position.x = dz.position.x + dir * 2.4; o.userData.pushed = true; }
     }
-    if (e.full && Math.hypot(lp.x - SPOIL.x, lp.z - SPOIL.z) < 4.5 && e.bucket < -0.4) {
-      e.full = false;
-      pr.scoops = (pr.scoops || 0) + 1;
-      this.audio.play('thud');
-      this.puff(tip, 0x6b4a2e);
-      if (this.session.auto) this.session.auto.step = 0;
-      if (pr.scoops >= 4) { this.finishStage(1); return; }
-      this.refreshPlot(this.session.i);
+    if (s.laneT >= 1) {
+      for (const k in this.site.h.debris) { const o = this.site.h.debris[k]; if (o.userData.pushed) { o.parent?.remove(o); this.removeDebris(+k); if (!this.session || this.session.phase !== 'work') return; } }
+      s.lane++;
+      s.laneT = 0;
+      this.panel();
+      if (s.lane >= lanes.length) {
+        // anything the blade missed is picked up by the crew
+        for (const k in this.site.h.debris) { this.site.h.debris[k].parent?.remove(this.site.h.debris[k]); this.removeDebris(+k); if (!this.session || this.session.phase !== 'work') return; }
+      } else this.run([{ dur: 0.7, fn: (e) => { dz.position.z = lerp(z, lanes[s.lane], e); } }]);
+    }
+  }
+
+  // ---- dig ----
+  nextSeg() { const dug = this.progress().dug || []; const s = this.site.segs.find((x) => !dug.includes(x.k)); return s ? s.k : null; }
+  diggerSpot(seg) {
+    const sg = this.site.segs[seg], out = sg.w.out;
+    const back = this.session.mach === 'backhoe';
+    const d = back ? 5.2 : 6.2;
+    return { x: sg.x + out[0] * d, z: sg.z + out[1] * d, yaw: back ? Math.atan2(out[0], out[1]) : Math.atan2(-out[0], -out[1]) };
+  }
+  moveDigger(seg) {
+    const o = this.m[this.session.mach];
+    const t = this.diggerSpot(seg);
+    const from = [o.position.x, o.position.z];
+    this.setFocus(this.site.segs[seg].x, 0, this.site.segs[seg].z);
+    // drive around the outside of the building, not through it
+    const { hw, hd } = this.site.L;
+    const ring = (x, z) => { const m = Math.max(Math.abs(x) / (hw + 6), Math.abs(z) / (hd + 6)); return m < 1 ? [x / m, z / m] : [x, z]; };
+    const mid = ring((from[0] + t.x) / 2, (from[1] + t.z) / 2);
+    this.run([
+      ...this.driveSteps(this.session.mach, [from, mid, [t.x, t.z]], 4, false),
+      { dur: 0.6, fn: (e) => { o.rotation.y = lerpAngle(o.rotation.y, t.yaw, e); } },
+    ], () => this.panel());
+  }
+  pose(name, p) {
+    const u = this.m[name].userData;
+    const sg = name === 'backhoe' ? -1 : 1;
+    if (name === 'backhoe') u.swing.rotation.y = p.swing; else u.upper.rotation.y = p.swing;
+    u.boom.rotation.x = sg * p.boom; u.stick.rotation.x = sg * p.stick; u.bucket.rotation.x = sg * p.bucket;
+  }
+  digPose(depth) { return this.session.mach === 'backhoe' ? { swing: 0, boom: -0.25 + depth * 0.5, stick: 1.0 + depth * 0.25, bucket: 0.2 } : { swing: 0, boom: -0.05 + depth * 0.32, stick: 0.85 + depth * 0.35, bucket: -0.2 }; }
+  updateDig(dt) {
+    const s = this.session;
+    if (s.seg == null || this.busy()) return;
+    if (s.auto) { s.gauge = 0.7; this.digRelease(); return; }
+    if (s.held) {
+      s.gauge = Math.min(1, s.gauge + dt * 0.42);
+      this.engine(dt);
+      this.game.ui.buildMeter(s.gauge);
+    }
+    const p = this.digPose(s.held ? s.gauge / 0.7 : 0);
+    if (!s.held) p.boom -= 0.35;
+    this.pose(s.mach, p);
+  }
+  digRelease() {
+    const s = this.session, g = s.gauge, pr = this.progress();
+    const seg = s.seg;
+    if (g < 0.62) { this.toast('Not deep enough yet — hold a little longer.'); this.audio.play('error'); s.gauge = 0; this.panel(); return; }
+    if (g > 0.78) { s.stars = Math.max(1, s.stars - 1); this.toast('Oops, a bit too deep! The crew puts some soil back.'); }
+    else if (!s.auto) this.toast('Perfect depth!', 'good');
+    const name = s.mach, u = this.m[name].userData;
+    const p0 = this.digPose(g / 0.7);
+    const side = this.swingTo(name, V.heapPos(this.site.segs[seg]));
+    const cover = this.site.h.segCovers[seg];
+    this.audio.play('clank');
+    this.run([
+      { dur: 0.7, fn: (e) => { this.pose(name, { ...p0, bucket: lerp(p0.bucket, 1.5, e) }); }, end: () => { u.dirt.visible = true; if (cover) { cover.parent?.remove(cover); delete this.site.h.segCovers[seg]; } this.puff(this.segPoint(seg), 0x8a6a48, 5); } },
+      { dur: 0.8, fn: (e) => { this.pose(name, { swing: lerp(0, side, e), boom: lerp(p0.boom, -0.6, e), stick: lerp(p0.stick, 1.1, e), bucket: 1.5 }); } },
+      { dur: 0.5, fn: (e) => { this.pose(name, { swing: side, boom: -0.6, stick: 1.1, bucket: lerp(1.5, -0.6, e) }); }, end: () => { u.dirt.visible = false; this.dropSpoil(name, seg); this.audio.play('thud'); } },
+      { dur: 0.7, fn: (e) => { this.pose(name, { swing: lerp(side, 0, e), boom: -0.4, stick: 1.1, bucket: lerp(-0.6, 0.2, e) }); } },
+    ], () => {
+      pr.dug ||= [];
+      if (!pr.dug.includes(seg)) pr.dug.push(seg);
+      s.gauge = 0;
+      s.seg = this.nextSeg();
       this.game.save();
-      this.game.ui.buildPanel(this.panelInfo());
+      if (s.seg == null) this.digDone();
+      else { this.moveDigger(s.seg); this.panel(); }
+    });
+  }
+  // which way the digger's arm must turn to point at a spot on the site
+  swingTo(name, [hx, hz]) {
+    const o = this.m[name];
+    const dx = hx - o.position.x, dz = hz - o.position.z, Y = o.rotation.y;
+    const vx = dx * Math.cos(Y) - dz * Math.sin(Y), vz = dx * Math.sin(Y) + dz * Math.cos(Y);
+    return name === 'backhoe' ? Math.atan2(-vx, -vz) : Math.atan2(vx, vz);
+  }
+  dropSpoil(name, seg) {
+    const tip = this.m[name].userData.tip;
+    tip.getWorldPosition(this.tmp);
+    this.site.root.worldToLocal(this.tmp);
+    const h = this.site.h;
+    h.heaps ||= [];
+    let heap = h.heaps.find((m) => m.userData.seg === seg);
+    if (!heap) { heap = V.heapMesh(this.site.segs[seg], 0.3); this.site.root.add(heap); h.heaps.push(heap); }
+    else heap.scale.multiplyScalar(1.15);
+    this.puff(V3(this.tmp.x, Math.max(0.6, this.tmp.y), this.tmp.z), 0x8a6a48, 6);
+  }
+  digDone() {
+    // the tipper takes the extra soil away
+    const tp = this.m.tipper, u = tp.userData;
+    const { hw, hd } = this.site.L;
+    u.load.visible = true;
+    this.run([
+      { dur: 1.2, fn: (e) => { u.load.scale.y = Math.max(0.01, e); } },
+      ...this.driveSteps('tipper', [[tp.position.x, tp.position.z], [-hw - 6, 18], [30, 18]], 7, false),
+    ], () => { u.load.visible = false; this.done('All the foundation trenches are 1 metre deep. The tipper took away the extra soil.'); });
+  }
+  segPoint(k) { const s = this.site.segs[k]; return V3(s.x, -0.6, s.z); }
+
+  // ---- steel ----
+  makeSegGhosts(filter) {
+    this.pickables = [];
+    for (const sg of this.site.segs) {
+      if (!filter(sg.k)) continue;
+      const gm = V.box(sg.len, 1.2, B.TRENCH_W + 0.3, V.mats().ghost, sg.x, -0.3, sg.z);
+      gm.rotation.y = sg.yaw; gm.castShadow = false;
+      gm.userData = { seg: sg };
+      this.site.root.add(gm); this.pickables.push(gm);
+    }
+  }
+  tapCage(sg, ghost) {
+    ghost.parent?.remove(ghost);
+    this.pickables = this.pickables.filter((p) => p !== ghost);
+    const k = this.freeWorker();
+    this.crewTo(k, sg.x + sg.w.out[0] * 1.2, sg.z + sg.w.out[1] * 1.2, 'walk', sg.x, sg.z);
+    const cage = V.cageMesh(sg);
+    const y1 = cage.position.y;
+    cage.position.y = 1.2;
+    this.site.root.add(cage);
+    this.audio.play('clank');
+    this.run([{ dur: 0.9, fn: (e) => { cage.position.y = lerp(1.2, y1, e); } }], () => {
+      const pr = this.progress();
+      pr.cages ||= [];
+      pr.cages.push(sg.k);
+      this.site.h.segCages[sg.k] = cage;
+      this.panel();
+      if (pr.cages.length >= this.site.segs.length) this.done('Every trench has a steel cage, lifted on cover blocks.');
+    }, false);
+  }
+
+  // ---- footing ----
+  footWalls() { return this.site.L.walls.map((w) => this.site.segs.filter((s) => s.w === w).map((s) => s.k)); }
+  wallFill(wi) { const f = this.progress().fill || {}; const ks = this.footWalls()[wi]; return ks.reduce((a, k) => a + (f[k] || 0), 0) / ks.length / B.TRENCH_D; }
+  nextFootWall() { const ws = this.footWalls(); const i = ws.findIndex((_, k) => this.wallFill(k) < 0.42); return i < 0 ? null : i; }
+  moveMixer(wi) {
+    const w = this.site.L.walls[wi];
+    const [cx, cz] = V.wallPoint(w, w.len / 2);
+    const tx = cx + w.out[0] * 5.6, tz = cz + w.out[1] * 5.6;
+    const mx = this.m.mixer;
+    this.setFocus(cx, 0, cz);
+    const { hw, hd } = this.site.L;
+    const ring = (x, z) => { const m = Math.max(Math.abs(x) / (hw + 7), Math.abs(z) / (hd + 7)); return m < 1 ? [x / m, z / m] : [x, z]; };
+    const mid = ring((mx.position.x + tx) / 2, (mx.position.z + tz) / 2);
+    this.run([
+      ...this.driveSteps('mixer', [[mx.position.x, mx.position.z], mid, [tx + w.out[0] * 3, tz + w.out[1] * 3]], 5, false),
+      ...this.driveSteps('mixer', [[tx + w.out[0] * 3, tz + w.out[1] * 3], [tx, tz]], 2, true),
+      { dur: 0.4, fn: (e) => { mx.rotation.y = lerpAngle(mx.rotation.y, Math.atan2(w.out[0], w.out[1]), e); } },
+    ], () => { this.audio.play('click'); this.panel(); });
+  }
+  updateFooting(dt) {
+    const s = this.session;
+    const mx = this.m.mixer.userData;
+    mx.drum.rotation.z += dt * (s.held ? 3 : 1);
+    if (s.wall != null && !this.busy() && s.auto) { s.gauge = 0.5; this.pourRelease(); return; }
+    if (s.wall == null || this.busy() || !s.held) return;
+    s.gauge = Math.min(0.75, s.gauge + dt * 0.12);
+    const pr = this.progress();
+    pr.fill ||= {};
+    for (const k of this.footWalls()[s.wall]) {
+      pr.fill[k] = s.gauge * B.TRENCH_D;
+      const m = this.site.h.segFills[k];
+      if (m) { m.visible = true; m.scale.y = Math.max(0.001, pr.fill[k]); }
+    }
+    this.game.ui.buildMeter(s.gauge);
+    this.engine(dt);
+    // the stream from the chute to the concrete surface
+    const w = this.site.L.walls[s.wall];
+    const [cx, cz] = V.wallPoint(w, w.len / 2);
+    const top = V3(), bot = V3(cx, -B.TRENCH_D + s.gauge * B.TRENCH_D, cz);
+    this.m.mixer.userData.chute.localToWorld(top.set(0, 0, -1.8));
+    this.site.root.worldToLocal(top);
+    stretch(mx.stream, top, bot, this.site.root);
+    if (Math.random() < dt * 8) this.puff(bot, 0x9a988f, 1, 0.5);
+  }
+  pourRelease() {
+    const s = this.session, g = s.gauge;
+    if (g < 0.42) { this.toast('Keep pouring until the concrete reaches the green line.'); this.panel(); return; }
+    if (g > 0.58) { s.stars = Math.max(1, s.stars - 1); this.toast('A little too much — the crew scrapes it level.'); }
+    else if (!s.auto) this.toast('Spot on!', 'good');
+    const pr = this.progress();
+    pr.fill ||= {};
+    for (const k of this.footWalls()[s.wall]) { pr.fill[k] = B.FOOTING_H; this.site.h.segFills[k].visible = true; this.site.h.segFills[k].scale.y = B.FOOTING_H; }
+    this.game.save();
+    s.wall = this.nextFootWall();
+    s.gauge = 0;
+    if (s.wall == null) {
+      this.run([...this.driveSteps('mixer', [[this.m.mixer.position.x, this.m.mixer.position.z], [this.m.mixer.position.x, 18], [30, 18]], 7, false)], () => this.done('The footing concrete is poured. After 7 days of curing it is as hard as rock.'));
+    } else this.moveMixer(s.wall);
+    this.panel();
+  }
+
+  // ---- plinth ----
+  updatePlinth(dt) {
+    const s = this.session, pr = this.progress(), h = this.site.h;
+    if (!s.held || this.busy()) return;
+    if (s.step === 'build') {
+      pr.plinth = Math.min(1, (pr.plinth || 0) + dt * 0.12);
+      V.setPlinth(h, pr.plinth);
+      this.game.ui.buildMeter(pr.plinth);
+      if (Math.random() < dt * 3) this.audio.play('click');
+      if (pr.plinth >= 1) {
+        s.step = 'fill';
+        s.held = false;
+        this.show('roller', -this.site.L.hw + 1.5, 0, Math.PI / 2, 0.05);
+        this.toast('Plinth wall built! Now fill and press the soil.', 'good');
+        this.game.save();
+        this.panel();
+      }
+    } else if (s.step === 'fill') {
+      pr.backfill = Math.min(1, (pr.backfill || 0) + dt * 0.1);
+      V.setBackfill(h, pr.backfill);
+      V.setHeaps(h, 1 - pr.backfill);
+      const r = this.m.roller, hw = this.site.L.hw - 1.6, hd = this.site.L.hd - 1.4;
+      const t = pr.backfill * 7;
+      const lane = Math.floor(t), f = t - lane;
+      r.position.set(lane % 2 ? lerp(hw, -hw, f) : lerp(-hw, hw, f), (B.PLINTH - 0.06) * pr.backfill + 0.03, lerp(-hd, hd, Math.min(1, lane / 6)));
+      r.rotation.y = lane % 2 ? -Math.PI / 2 : Math.PI / 2;
+      r.userData.drum.rotation.x += dt * 4;
+      this.engine(dt);
+      this.game.ui.buildMeter(pr.backfill);
+      if (pr.backfill >= 1) { s.step = 'dpc'; s.held = false; this.m.roller.visible = false; (h.heaps || []).forEach((m) => m.parent?.remove(m)); h.heaps = []; this.game.save(); this.panel(); }
+    }
+  }
+  layDpc() {
+    const s = this.session, pr = this.progress(), h = this.site.h;
+    if (s.step !== 'dpc') return;
+    h.dpc.visible = true; h.dpc.scale.x = 0.01;
+    this.audio.play('click');
+    this.run([{ dur: 1.2, fn: (e) => { h.dpc.scale.x = Math.max(0.01, e); } }], () => { pr.dpc = true; s.step = 'done'; this.done('The plinth is up, the soil is pressed hard and the damp-proof layer keeps water out.'); });
+  }
+
+  // ---- columns ----
+  foldPump(k) {
+    const u = this.m.pump.userData;
+    u.segs[0].rotation.x = lerp(-0.35, -1.2, k); u.segs[1].rotation.x = lerp(1.2, 2.6, k); u.segs[2].rotation.x = lerp(0.9, -2.6, k);
+  }
+  // aim the folding boom so its tip hangs above a point (site-local)
+  aimPump(target) {
+    const pump = this.m.pump, u = pump.userData;
+    const base = V3();
+    u.turret.getWorldPosition(base);
+    this.site.root.worldToLocal(base);
+    const s = pump.scale.x;
+    const L0 = 6 * s, L1 = 5.5 * s, L2 = 5 * s;
+    const yawLocal = Math.atan2(target.x - base.x, target.z - base.z) - pump.rotation.y;
+    u.turret.rotation.y = yawLocal;
+    const d = Math.hypot(target.x - base.x, target.z - base.z);
+    const p2 = -1.15; // last section points steeply down
+    const ex = d - L2 * Math.cos(p2), ey = target.y + 1.6 - (base.y + 0.6 * s) - L2 * Math.sin(p2);
+    const r = clamp(Math.hypot(ex, ey), Math.abs(L0 - L1) + 0.1, L0 + L1 - 0.05);
+    const a = Math.atan2(ey, ex);
+    const c1 = clamp((L0 * L0 + r * r - L1 * L1) / (2 * L0 * r), -1, 1);
+    const p0 = a + Math.acos(c1);
+    const c2 = clamp((L0 * L0 + L1 * L1 - r * r) / (2 * L0 * L1), -1, 1);
+    const p1 = p0 - (Math.PI - Math.acos(c2));
+    return { s0: -p0, s1: -(p1 - p0), s2: -(p2 - p1) };
+  }
+  tapColumn(c, ghost) {
+    const s = this.session;
+    if (s.step !== 'pour') return;
+    ghost.parent?.remove(ghost);
+    this.pickables = this.pickables.filter((p) => p !== ghost);
+    const u = this.m.pump.userData;
+    const tgt = V3(c.x, c.y0 + B.FLOOR_H, c.z);
+    const from = { s0: u.segs[0].rotation.x, s1: u.segs[1].rotation.x, s2: u.segs[2].rotation.x, yaw: u.turret.rotation.y };
+    const aim = this.aimPump(tgt);
+    const yaw = u.turret.rotation.y;
+    u.turret.rotation.y = from.yaw;
+    const conc = this.site.h.cols[c.k];
+    this.setFocus(c.x, c.y0 + 1.5, c.z);
+    const stream = this.streamMesh();
+    this.audio.play('clank');
+    this.run([
+      { dur: 1.2, fn: (e) => { u.turret.rotation.y = lerpAngle(from.yaw, yaw, e); u.segs[0].rotation.x = lerp(from.s0, aim.s0, e); u.segs[1].rotation.x = lerp(from.s1, aim.s1, e); u.segs[2].rotation.x = lerp(from.s2, aim.s2, e); } },
+      { dur: 1.6, start: () => { stream.visible = true; conc.visible = true; }, fn: (e) => {
+        conc.scale.y = Math.max(0.001, e * B.FLOOR_H);
+        const tip = V3(0, 0, 5); u.segs[2].localToWorld(tip); this.site.root.worldToLocal(tip);
+        stretch(stream, tip, V3(c.x, c.y0 + e * B.FLOOR_H, c.z), this.site.root);
+        this.engine(0.016);
+      }, end: () => { stream.visible = false; } },
+    ], () => {
+      const pr = this.progress();
+      pr.cols ||= [];
+      pr.cols.push(c.k);
+      this.game.save();
+      if (!this.pickables.length) { s.step = 'strip'; this.toast('All columns poured! Now we cure them for 7 days.', 'good'); this.timeLapse(7); }
+      this.panel();
+    });
+  }
+  stripShutters() {
+    const h = this.site.h;
+    this.audio.play('thud');
+    const sh = Object.values(h.colShutters);
+    this.run([{ dur: 1.0, fn: (e) => { sh.forEach((g) => { g.children.forEach((p) => {
+      p.userData.p0 ||= p.position.clone();
+      const n = V3(p.userData.p0.x, 0, p.userData.p0.z).normalize();
+      p.position.copy(p.userData.p0).addScaledVector(n, e * 0.7);
+      p.position.y = p.userData.p0.y * (1 - e * 0.9);
+      p.rotation.set(n.z * e * 1.3, 0, -n.x * e * 1.3);
+    }); }); } }], () => {
+      sh.forEach((g) => g.parent?.remove(g));
+      this.foldPumpAway();
+      this.done('Smooth, strong concrete columns! They will carry the floors above.');
+    });
+  }
+  foldPumpAway() { this.foldPump(1); this.m.pump.userData.turret.rotation.y = 0; }
+
+  // ---- walls ----
+  updateWalls(dt) {
+    const s = this.session, pr = this.progress(), h = this.site.h;
+    if (s.level) {
+      s.level.t += dt;
+      s.level.v = 0.5 + Math.sin(s.level.t * 2.3) * 0.42;
+      this.game.ui.buildMeter(s.level.v);
+      return;
+    }
+    // the tower crane swings pallets of bricks over now and then
+    this.craneIdle(dt);
+    if (!s.held || this.busy()) { this.crew.forEach((w) => { if (!w.userData.goal) w.userData.mode = 'idle'; }); return; }
+    this.crew.forEach((w) => { if (!w.userData.goal) w.userData.mode = 'work'; });
+    const tot = h.brickSlots.slots.length;
+    const rate = tot / 22; // whole floor in about 22 seconds of holding
+    pr.bricks = Math.min(tot, (pr.bricks || 0) + dt * rate);
+    V.setBricks(h, Math.floor(pr.bricks));
+    this.game.ui.buildMeter(pr.bricks / tot);
+    s.tick = (s.tick || 0) + dt;
+    if (s.tick > 0.22) { s.tick = 0; this.audio.play('click'); }
+    const k = pr.bricks / tot;
+    if (s.checks.length && k >= s.checks[0]) {
+      s.checks.shift();
+      s.held = false;
+      s.level = { t: Math.random() * 3, v: 0.5, tries: 0 };
+      this.audio.play('chime');
+      this.panel();
+      return;
+    }
+    if (pr.bricks >= tot) {
+      s.held = false;
+      this.game.save();
+      this.done(`Floor ${(this.ps.floor || 0) + 1} walls are built, with concrete lintels over every opening.`);
+    }
+  }
+  levelCheck() {
+    const s = this.session;
+    if (!s.level) return;
+    const ok = Math.abs(s.level.v - 0.5) < 0.07;
+    s.level.tries++;
+    if (ok) { this.toast('Perfectly level!', 'good'); this.audio.play('chime'); s.level = null; this.game.save(); this.panel(); return; }
+    this.audio.play('error');
+    if (s.level.tries >= 3) { s.stars = Math.max(1, s.stars - 1); this.toast('The crew tapped the bricks straight. Keep going!'); s.level = null; this.panel(); return; }
+    this.toast('Not quite — wait for the bubble to reach the middle.');
+  }
+
+  // ---- roof ----
+  slabDeck() {
+    const s = this.session, h = this.site.h, rp = this.progress().roof;
+    if (s.step !== 'deck') return;
+    h.deck.visible = true;
+    const y = h.deck.position.y;
+    h.deck.position.y = y - 3;
+    this.audio.play('thud');
+    this.run([{ dur: 1.4, fn: (e) => { h.deck.position.y = y - 3 * (1 - e); } }], () => { rp.deck = true; s.step = 'mesh'; this.game.save(); this.panel(); });
+  }
+  slabMesh() {
+    const s = this.session, h = this.site.h, rp = this.progress().roof;
+    if (s.step !== 'mesh') return;
+    h.slabMesh.visible = true;
+    h.slabMesh.children.forEach((b) => { b.visible = false; });
+    const kids = h.slabMesh.children;
+    this.audio.play('clank');
+    this.run([{ dur: 1.6, fn: (e) => { const n = Math.floor(e * kids.length); for (let k = 0; k < n; k++) kids[k].visible = true; } }], () => {
+      kids.forEach((b) => { b.visible = true; });
+      rp.mesh = true; s.step = 'pour';
+      const { hw, hd } = this.site.L;
+      this.show('pump', hw + 3.2, hd + 7, Math.PI); this.foldPump(1);
+      this.game.save(); this.panel();
+    });
+  }
+  updateRoof(dt) {
+    const s = this.session, rp = this.progress().roof, h = this.site.h, site = this.site;
+    this.craneIdle(dt);
+    if (this.busy()) return;
+    if (s.step === 'pour') {
+      const u = this.m.pump.userData;
+      if (!s.stream) s.stream = this.streamMesh();
+      s.stream.visible = s.held;
+      if (!s.held) return;
+      rp.pour = Math.min(1, (rp.pour || 0) + dt * 0.08);
+      V.setSlab(h, rp.pour);
+      const { hw, hd } = site.L;
+      const y = B.floorBase(this.ps.floor || 0) + B.FLOOR_H;
+      const x = -hw + 2 * hw * rp.pour, z = Math.sin(rp.pour * 40) * hd * 0.8;
+      const aim = this.aimPump(V3(x, y, z));
+      u.segs[0].rotation.x = lerp(u.segs[0].rotation.x, aim.s0, dt * 4); u.segs[1].rotation.x = lerp(u.segs[1].rotation.x, aim.s1, dt * 4); u.segs[2].rotation.x = lerp(u.segs[2].rotation.x, aim.s2, dt * 4);
+      const tip = V3(0, 0, 5); u.segs[2].localToWorld(tip); site.root.worldToLocal(tip);
+      stretch(s.stream, tip, V3(x, y + B.SLAB_T, z), site.root);
+      this.setFocus(x, y, 0);
+      this.engine(dt);
+      this.game.ui.buildMeter(rp.pour);
+      if (rp.pour >= 1) {
+        s.held = false; s.stream.visible = false;
+        this.foldPumpAway();
+        this.game.save();
+        this.timeLapse(14);
+        h.deck.visible = false;
+        this.done(this.ps.floor + 1 < site.proj.floors ? `The slab is poured and cured for 14 days. It is the floor for storey ${this.ps.floor + 2}!` : 'The roof slab is poured and cured. A parapet wall and a water tank go on top.');
+      }
+    } else if (s.step === 'gables') {
+      if (!s.held) return;
+      rp.gablesK = Math.min(1, (rp.gablesK || 0) + dt * 0.25);
+      h.pitched.gables.visible = true;
+      h.pitched.gables.children.forEach((m) => { m.scale.y = Math.max(0.001, rp.gablesK); });
+      this.game.ui.buildMeter(rp.gablesK);
+      if (rp.gablesK >= 1) { s.held = false; s.step = 'trusses'; this.makeTrussGhosts(); this.game.save(); this.panel(); }
+    } else if (s.step === 'cover') {
+      if (!s.held) return;
+      rp.cover = Math.min(1, (rp.cover || 0) + dt * 0.1);
+      V.setCover(h, rp.cover);
+      this.game.ui.buildMeter(rp.cover);
+      s.tick = (s.tick || 0) + dt;
+      if (s.tick > 0.3) { s.tick = 0; this.audio.play('click'); }
+      if (rp.cover >= 1) { s.held = false; this.game.save(); this.done(site.proj.roof === 'tin' ? 'The metal roof is fixed — rain will drum on it but never get in!' : 'The clay tile roof is on. Monsoon rain will run straight off.'); }
+    }
+  }
+  makeTrussGhosts() {
+    const h = this.site.h, rp = this.progress().roof;
+    this.pickables = [];
+    h.pitched.trusses.forEach((t, k) => {
+      if ((rp.trusses || []).includes(k)) return;
+      const gm = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.6, 2 * this.site.L.hd + 1), V.mats().ghost);
+      gm.position.set(t.position.x, t.position.y + 0.8, 0);
+      gm.userData = { truss: k };
+      this.site.root.add(gm); this.pickables.push(gm);
+    });
+  }
+  tapTruss(k, ghost) {
+    const s = this.session, h = this.site.h, rp = this.progress().roof;
+    if (s.step !== 'trusses') return;
+    ghost.parent?.remove(ghost);
+    this.pickables = this.pickables.filter((p) => p !== ghost);
+    const t = h.pitched.trusses[k];
+    const home = t.userData.home.clone();
+    const { hd } = this.site.L;
+    const start = V3(home.x, 0.3, hd + 5);
+    t.visible = true;
+    t.position.copy(start);
+    this.audio.play('clank');
+    const hook = this.craneHook();
+    this.run([{ dur: 2.0, fn: (e) => {
+      const up = Math.min(1, e * 2), across = clamp((e - 0.35) / 0.65, 0, 1);
+      t.position.set(home.x, lerp(start.y, home.y + 2.5, up) - across * 2.5 * across, lerp(start.z, home.z, ease(across)));
+      this.craneTo(hook, t.position);
+    } }], () => {
+      t.position.copy(home);
+      rp.trusses ||= []; rp.trusses.push(k);
+      this.audio.play('thud');
+      this.game.save();
+      if (rp.trusses.length >= h.pitched.trusses.length) { s.step = 'cover'; this.toast('All trusses up! Triangles are strong.', 'good'); }
+      this.panel();
+    });
+  }
+  // tower crane helpers (crane sits at the back-left corner of the site)
+  craneHook() { return this.m.crane.userData; }
+  craneTo(u, local) {
+    const c = this.m.crane;
+    const dx = local.x - c.position.x, dz = local.z - c.position.z;
+    const th = Math.atan2(dz, dx);
+    u.top.rotation.y = -th;
+    u.trolley.position.x = Math.hypot(dx, dz);
+    u.hook.position.set(Math.cos(th) * Math.hypot(dx, dz), local.y + 0.8, Math.sin(th) * Math.hypot(dx, dz));
+    const pos = u.cable.geometry.attributes.position;
+    pos.setXYZ(0, u.hook.position.x, u.height + 0.3, u.hook.position.z);
+    pos.setXYZ(1, u.hook.position.x, u.hook.position.y + 0.6, u.hook.position.z);
+    pos.needsUpdate = true;
+    u.cable.geometry.computeBoundingSphere();
+  }
+  craneIdle(dt) {
+    const c = this.m.crane;
+    if (!c.visible) return;
+    this.session.ct = (this.session.ct || 0) + dt;
+    const t = this.session.ct * 0.25;
+    const { hw, hd } = this.site.L;
+    this.craneTo(c.userData, V3(Math.sin(t) * hw * 0.8, 6 + Math.sin(t * 1.7) * 2, hd + 2 + Math.cos(t) * 3));
+  }
+
+  // ---- fittings ----
+  makeFitGhosts() {
+    const done = new Set(this.progress().fit || []);
+    this.pickables = [];
+    for (const op of V.openings(this.site.L)) {
+      if (done.has(op.key)) continue;
+      const gm = new THREE.Mesh(new THREE.BoxGeometry(op.o.w + 0.1, op.o.h + 0.1, 0.5), op.o.kind === 'window' ? V.mats().ghost : V.mats().hot);
+      gm.position.set(op.x, op.y + op.o.h / 2, op.z);
+      gm.rotation.y = op.yaw;
+      gm.userData = { fit: op };
+      this.site.root.add(gm); this.pickables.push(gm);
+    }
+  }
+  tapFit(op, ghost) {
+    ghost.parent?.remove(ghost);
+    this.pickables = this.pickables.filter((p) => p !== ghost);
+    const g = V.fittingAt(op);
+    const outv = V3(op.w.out[0], 0, op.w.out[1]);
+    const end = g.position.clone();
+    this.site.root.add(g);
+    this.audio.play('click');
+    const k = this.freeWorker();
+    this.crewTo(k, op.x + op.w.out[0] * 1.1, op.z + op.w.out[1] * 1.1, 'walk', op.x, op.z, op.f === 0 ? 0 : null);
+    this.run([{ dur: 0.6, fn: (e) => { g.position.copy(end).addScaledVector(outv, (1 - e) * 1.5); } }], () => {
+      const pr = this.progress();
+      pr.fit ||= [];
+      pr.fit.push(op.key);
+      this.site.h.fits[op.key] = g;
+      this.audio.play('thud');
+      if (!this.pickables.length) { this.session.step = 'quiz'; this.startQuiz(); }
+      this.panel();
+    }, false);
+  }
+  startQuiz() {
+    const s = this.session;
+    s.quiz = QUIZZES[(this.session.i * 2 + (s.quizN || 0)) % QUIZZES.length];
+    s.feedback = null;
+    this.panel();
+  }
+  answerQuiz(id) {
+    const s = this.session;
+    if (!s.quiz || s.answered) return;
+    const o = s.quiz.opts.find((x) => x.id === id);
+    if (!o) return;
+    s.feedback = { good: !!o.good, text: o.why };
+    this.audio.play(o.good ? 'chime' : 'error');
+    if (!o.good) { s.stars = Math.max(1, s.stars - 1); this.panel(); return; }
+    s.answered = true;
+    this.panel();
+    setTimeout(() => { if (this.session === s) { s.answered = false; s.quiz = null; this.done('Doors and windows are in, and the wiring and pipes are safely inside the walls.'); } }, 1600);
+  }
+
+  // ---- finish ----
+  skinKeys() { const out = []; for (let f = 0; f < this.site.proj.floors; f++) for (const w of this.site.L.walls) out.push(`${f}:${w.id}`); return out; }
+  skinHit(rc) {
+    const skins = Object.values(this.site.h.skins);
+    const hits = rc.intersectObjects(skins, false);
+    return hits[0] || null;
+  }
+  paintAt(hit) {
+    const s = this.session, u = hit.object.userData, pr = this.progress();
+    const key = u.skin;
+    if (s.step === 'plaster') {
+      if ((pr.plaster || []).includes(key)) return;
+      B.paintMask(u.mask, hit.uv.x, hit.uv.y, 0.1);
+    } else {
+      if ((pr.paint || []).includes(key)) return;
+      if (!(pr.plaster || []).includes(key)) return;
+      // paint goes on as a second mask layer: tint the plaster as the brush passes
+      if (!u.paint) { u.paint = B.makeMask(u.w, B.FLOOR_H); const m = hit.object.material.clone(); m.color.set(s.paintColor); m.alphaMap = u.paint.tex; u.paintMesh = new THREE.Mesh(hit.object.geometry, m); u.paintMesh.position.copy(hit.object.position); u.paintMesh.rotation.copy(hit.object.rotation); u.paintMesh.translateZ(0.004); hit.object.parent.add(u.paintMesh); }
+      u.paintMesh.material.color.set(s.paintColor);
+      B.paintMask(u.paint, hit.uv.x, hit.uv.y, 0.1);
+    }
+    s.swipe = (s.swipe || 0) + 1;
+    if (s.swipe % 6 === 0) { this.audio.play('click'); this.checkSkins(); }
+  }
+  checkSkins() {
+    const s = this.session, pr = this.progress(), ps = this.ps;
+    let changed = false;
+    for (const key in this.site.h.skins) {
+      const u = this.site.h.skins[key].userData;
+      if (s.step === 'plaster' && !(pr.plaster || []).includes(key) && B.maskCoverage(u.mask) > 0.72) { B.fillMask(u.mask); (pr.plaster ||= []).push(key); changed = true; this.audio.play('chime'); }
+      if (s.step === 'paint' && u.paint && !(pr.paint || []).includes(key) && B.maskCoverage(u.paint) > 0.72) { B.fillMask(u.paint); (pr.paint ||= []).push(key); ps.colors.walls = s.paintColor; changed = true; this.audio.play('chime'); }
+    }
+    if (!changed) return;
+    this.game.save();
+    if (s.step === 'plaster' && pr.plaster.length >= this.skinKeys().length) { s.step = 'paint'; this.toast('All walls plastered! Now choose a colour and paint.', 'good'); }
+    if (s.step === 'paint' && (pr.paint || []).length >= this.skinKeys().length) { ps.colors.walls = s.paintColor; this.done('Plastered and painted — it looks brand new!'); return; }
+    this.panel();
+  }
+
+  // ---- handover ----
+  pickFloor(id) {
+    const s = this.session, pr = this.progress();
+    if (s.phase !== 'work' || s.step !== 'floor') return;
+    pr.floorPat = id;
+    this.ps.colors.floor = id;
+    this.audio.play('chime');
+    this.rebuild();
+    s.step = 'garden';
+    this.makeGardenGhosts();
+    this.panel();
+  }
+  makeGardenGhosts() {
+    const done = new Set(this.progress().garden || []);
+    this.pickables = [];
+    for (const gi of V.gardenItems(this.site.L, this.site.proj)) {
+      if (done.has(gi.id)) continue;
+      const gm = gi.id === 'wall'
+        ? new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), V.mats().hot)
+        : new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.8, gi.w), Math.max(0.6, gi.h), Math.max(0.8, gi.d)), V.mats().ghost);
+      if (gi.id === 'wall') gm.position.set(11.4, 0.7, 10.4); else gm.position.set(gi.x, gi.id === 'board' ? 2.75 : Math.max(0.3, gi.h / 2), gi.z);
+      gm.userData = { garden: gi };
+      this.site.root.add(gm); this.pickables.push(gm);
+    }
+  }
+  tapGarden(gi, ghost) {
+    ghost.parent?.remove(ghost);
+    this.pickables = this.pickables.filter((p) => p !== ghost);
+    const m = V.gardenMesh(gi, this.ps, this.site.L);
+    m.scale.setScalar(0.01);
+    this.site.root.add(m);
+    this.audio.play('thud');
+    this.run([{ dur: 0.5, fn: (e) => m.scale.setScalar(Math.max(0.01, ease(e))) }], () => {
+      const pr = this.progress();
+      (pr.garden ||= []).push(gi.id);
+      this.site.h.garden[gi.id] = m;
+      if (!this.pickables.length) this.inspect();
+      this.panel();
+    }, false);
+  }
+  inspect() {
+    const s = this.session, { hw, hd } = this.site.L;
+    s.step = 'inspect';
+    s.checked = 0;
+    const ins = this.inspector;
+    ins.visible = true; this.site.root.add(ins);
+    ins.position.set(0, 0, 13);
+    const pts = [[0, 13], [hw + 1.5, hd + 1.5], [hw + 1.5, -hd - 1.5], [-hw - 1.5, -hd - 1.5], [-hw - 1.5, hd + 1.5], [0, hd + 2.5]];
+    const steps = [];
+    for (let k = 1; k < pts.length; k++) {
+      const a = pts[k - 1], b = pts[k];
+      const dur = Math.hypot(b[0] - a[0], b[1] - a[1]) / 2.2;
+      steps.push({ dur, fn: (e) => { ins.position.set(lerp(a[0], b[0], e), 0, lerp(a[1], b[1], e)); ins.rotation.y = Math.atan2(b[0] - a[0], b[1] - a[1]); animateWorker(ins, this.game.time, 'walk'); }, end: () => { s.checked = k; this.audio.play('click'); this.panel(); } });
+    }
+    this.run(steps, () => { animateWorker(ins, 0, 'idle'); s.step = 'open'; this.audio.play('chime'); this.panel(); });
+    this.panel();
+  }
+  openDoors() {
+    const s = this.session;
+    if (s.step !== 'open') return;
+    s.step = 'arrive';
+    const site = this.site;
+    const door = V.openings(site.L).find((o) => o.f === 0 && o.o.kind !== 'window');
+    const tx = door ? door.x : 0, tz = door ? door.z : site.L.hd;
+    this.people.forEach((p, k) => { p.visible = true; site.root.add(p); p.position.set(tx - 1 + k, 0, 15 + k * 0.8); });
+    this.audio.play('fanfare');
+    this.confetti(V3(tx, 3, tz + 1));
+    this.run([{ dur: 3.2, fn: (e) => {
+      this.people.forEach((p, k) => {
+        const sx = tx - 1 + k, sz = 15 + k * 0.8;
+        const ee = clamp(e * 1.2 - k * 0.1, 0, 1);
+        p.position.set(lerp(sx, tx + (k - 1) * 0.6, ee), ee > 0.85 ? B.PLINTH : 0, lerp(sz, tz + 1.2, ee));
+        p.rotation.y = Math.PI;
+        animateWorker(p, this.game.time, ee < 1 ? 'walk' : 'idle');
+      });
+    } }], () => this.done(`Welcome home! The ${site.proj.name} is open.`));
+    this.panel();
+  }
+
+  // ---------- help: finish the current task automatically (max two stars) ----------
+  help() {
+    const s = this.session, st = this.stageIdx(), pr = this.progress();
+    s.helped = true;
+    s.stars = Math.min(s.stars, 2);
+    this.audio.play('click');
+    switch (st) {
+      case ST.survey: {
+        const next = () => {
+          if (this.session !== s || s.phase !== 'work') return;
+          const o = this.pickables.find((p) => p.userData.peg === (pr.pegs || 0));
+          if (o) { this.tapPeg(o.userData.peg, o); setTimeout(next, 450); }
+        };
+        next();
+        break;
+      }
+      case ST.clear: for (const k in this.site.h.debris) { this.site.h.debris[k].parent?.remove(this.site.h.debris[k]); } for (const d of V.debrisList(s.i)) { pr.cleared ||= []; if (!pr.cleared.includes(d.k)) pr.cleared.push(d.k); } this.site.h.debris = {}; this.done('The crew cleared the plot for you.'); break;
+      case ST.dig: case ST.footing: s.auto = true; break;
+      case ST.steel: this.chainTaps((o) => this.tapCage(o.userData.seg, o), 300); break;
+      case ST.plinth: pr.plinth = 1; pr.backfill = 1; V.setPlinth(this.site.h, 1); V.setBackfill(this.site.h, 1); (this.site.h.heaps || []).forEach((m) => m.parent?.remove(m)); this.m.roller.visible = false; s.step = 'dpc'; this.layDpc(); break;
+      case ST.columns: if (s.step === 'strip') this.stripShutters(); else this.chainTaps((o) => this.tapColumn(o.userData.col, o), 3300); break;
+      case ST.walls: s.level = null; s.checks = []; pr.bricks = this.site.h.brickSlots.slots.length - 1; s.held = true; break;
+      case ST.roof: {
+        const rp = pr.roof;
+        if (this.isSlab()) { rp.deck = rp.mesh = true; this.site.h.deck.visible = true; this.site.h.slabMesh.visible = true; this.site.h.slabMesh.children.forEach((b) => { b.visible = true; }); rp.pour = 0.999; if (!this.m.pump.visible) { const { hw, hd } = this.site.L; this.show('pump', hw + 3.2, hd + 7, Math.PI); } s.step = 'pour'; s.held = true; }
+        else { rp.gablesK = 1; this.site.h.pitched.gables.visible = true; this.site.h.pitched.gables.children.forEach((m) => { m.scale.y = 1; }); rp.trusses = this.site.h.pitched.trusses.map((_, k) => k); this.site.h.pitched.trusses.forEach((t) => { t.visible = true; t.position.copy(t.userData.home); }); this.pickables.forEach((p) => p.parent?.remove(p)); this.pickables = []; rp.cover = 0.999; s.step = 'cover'; s.held = true; }
+        break;
+      }
+      case ST.fittings: this.chainTaps((o) => this.tapFit(o.userData.fit, o), 250); break;
+      case ST.finish: {
+        for (const key in this.site.h.skins) {
+          const u = this.site.h.skins[key].userData;
+          if (s.step === 'plaster') B.fillMask(u.mask);
+          else { this.paintAt({ object: this.site.h.skins[key], uv: { x: 0.5, y: 0.5 } }); B.fillMask(u.paint); }
+        }
+        this.checkSkins();
+        break;
+      }
+      case ST.handover: this.chainTaps((o) => this.tapGarden(o.userData.garden, o), 400); break;
+    }
+    this.panel();
+  }
+  chainTaps(fn, gap) {
+    const s = this.session;
+    const list = [...this.pickables];
+    list.forEach((o, k) => setTimeout(() => { if (this.session === s && o.parent) fn(o); }, k * gap));
+  }
+
+  // ---------- stage complete → review → next ----------
+  done(text) {
+    const s = this.session;
+    if (!s || s.phase !== 'work') return;
+    const i = s.i, ps = this.ps, st = ps.stage;
+    const res = L.completeStage(this.state, i, st, this.state.rules.realMaterials);
+    if (!res) { this.toast('Something is missing for this stage.'); return; }
+    ps.quality ||= [];
+    ps.quality.push(s.stars);
+    ps.days = (ps.days || 0) + DAYS[st];
+    s.phase = 'review';
+    s.doneStage = st;
+    s.review = text;
+    s.nextLabel = ps.done ? '🎉 Finish' : res.nextFloor ? `Floor ${ps.floor + 1} ▶` : `Next: ${STAGES[ps.stage].name} ▶`;
+    this.pickables.forEach((p) => p.parent?.remove(p));
+    this.pickables = [];
+    this.game.onStageComplete(i, res);
+    this.panel();
+  }
+  afterReview() {
+    const s = this.session, ps = this.ps;
+    this.finishSeqs();
+    this.rebuild();
+    if (ps.done) { this.confetti(V3(0, 6, 0)); this.game.exitBuild(); return; }
+    this.setupStage();
+    void s;
+  }
+  rebuild() { V.buildSite(this.site, this.ps, this.game); this.reattach(); }
+  reattach() {
+    const root = this.site.root;
+    for (const k in this.m) if (this.m[k].visible) root.add(this.m[k]);
+    for (const w of [...this.crew, ...this.people, this.inspector]) if (w.visible) root.add(w);
+    for (const p of this.pickables) root.add(p);
+    root.add(this.arrow);
+  }
+  timeLapse(days) {
+    const ps = this.ps;
+    this.game.ui.toast(`⏩ ${days} days later…`, 'good');
+    const dn = this.game.daynight;
+    if (dn && dn.mode === 'cycle') { const h0 = dn.hour; this.run([{ dur: 1.5, fn: (e) => { dn.hour = (h0 + e * 24) % 24; } }], null, false); }
+    void ps;
+  }
+
+  // ---------- crew ----------
+  crewTo(k, x, z, mode = 'idle', lx = null, lz = null, y = 0) {
+    const w = this.crew[k];
+    if (!w.visible) { w.visible = true; this.site.root.add(w); }
+    w.userData.goal = { x, z, y: y ?? 0, mode, lx, lz };
+  }
+  crewAround(mode, y, inside = false) {
+    const { hw, hd } = this.site.L;
+    const d = inside ? -0.8 : 1.0;
+    const spots = [[-hw * 0.5, hd + d, 0, hd], [hw + d, 0, hw, 0], [hw * 0.4, -hd - d, 0, -hd], [-hw - d, -hd * 0.3, -hw, 0]];
+    spots.forEach(([x, z, lx, lz], k) => this.crewTo(k, x, z, mode, lx, lz, inside ? y : 0));
+  }
+  freeWorker() {
+    let best = 0, bd = 1e9;
+    this.crew.forEach((w, k) => { const d = w.userData.goal ? 1e6 : 0; if (d < bd) { bd = d; best = k; } });
+    this.session.rr = ((this.session.rr || 0) + 1) % this.crew.length;
+    return bd >= 1e6 ? this.session.rr : best;
+  }
+  updateCrew(dt) {
+    const t = this.game.time;
+    for (const w of this.crew) {
+      if (!w.visible) continue;
+      const g = w.userData.goal;
+      if (g) {
+        const dx = g.x - w.position.x, dz = g.z - w.position.z, d = Math.hypot(dx, dz);
+        if (d > 0.08) {
+          const sp = Math.min(d, dt * 2.2);
+          w.position.x += (dx / d) * sp; w.position.z += (dz / d) * sp;
+          w.position.y = lerp(w.position.y, g.y || 0, Math.min(1, dt * 3));
+          w.rotation.y = lerpAngle(w.rotation.y, Math.atan2(dx, dz), Math.min(1, dt * 8));
+          animateWorker(w, t, 'walk');
+          continue;
+        }
+        w.position.y = g.y || 0;
+        if (g.lx != null) w.rotation.y = Math.atan2(g.lx - w.position.x, g.lz - w.position.z);
+        w.userData.mode = g.mode === 'walk' ? 'work' : g.mode;
+        w.userData.goal = null;
+        if (w.userData.mode === 'work') setTimeout(() => { if (!w.userData.goal && this.session && this.stageIdx() < ST.walls) w.userData.mode = 'idle'; }, 1800);
+      }
+      animateWorker(w, t, w.userData.mode);
     }
   }
 
-  updateCrane(dt, k, auto) {
-    const c = this.cr;
-    const before = [c.th, c.r, c.h];
-    const site = this.sites[this.session.i];
-    if (auto) this.craneAuto(dt, auto, site);
-    else {
-      const p = this.pad;
-      if (k('KeyA') || p.slewL) c.th += 0.45 * dt;
-      if (k('KeyD') || p.slewR) c.th -= 0.45 * dt;
-      if (k('KeyW') || p.out) c.r += 4 * dt;
-      if (k('KeyS') || p.in) c.r -= 4 * dt;
-      if (k('KeyQ') || p.up) c.h += 3 * dt;
-      if (k('KeyE') || p.down) c.h -= 3 * dt;
+  // ---------- frame update ----------
+  update(dt, keys) {
+    if (!this.session) return;
+    const s = this.session;
+    s.t += dt;
+    this.updateSeqs(dt);
+    this.updateCrew(dt);
+    this.updateParticles(dt);
+    if (s.phase === 'work') {
+      const st = this.stageIdx();
+      if (st === ST.clear) this.updateClear(dt);
+      else if (st === ST.dig) this.updateDig(dt);
+      else if (st === ST.footing) this.updateFooting(dt);
+      else if (st === ST.plinth) this.updatePlinth(dt);
+      else if (st === ST.walls) this.updateWalls(dt);
+      else if (st === ST.roof) this.updateRoof(dt);
+      else if (st === ST.columns) this.craneIdle(dt);
     }
-    c.r = clamp(c.r, 3, 25);
-    c.h = clamp(c.h, (c.carrying ? c.carrying.hang : 0) + 0.3, 17);
-    const moved = Math.abs(before[0] - c.th) * 10 + Math.abs(before[1] - c.r) + Math.abs(before[2] - c.h);
-    this.game.machineAudio.crane = Math.min(1, moved / dt / 3);
-    this.applyCrane();
+    // ease the camera towards the work
+    const ob = this.game.rig.orbit;
+    this.tmp.copy(this.focus);
+    this.site.root.localToWorld(this.tmp);
+    ob.center.lerp(this.tmp, Math.min(1, dt * 1.5));
+    // glowing targets pulse
+    const pulse = 0.5 + 0.5 * Math.sin(s.t * 5);
+    V.mats().ghost.opacity = 0.3 + 0.35 * pulse;
+    V.mats().hot.opacity = 0.45 + 0.35 * pulse;
+    // a bouncing arrow over the next thing to tap
+    const tgt = s.phase === 'work' && !this.busy() ? this.pickables.find((p) => p.parent) : null;
+    this.arrow.visible = !!tgt;
+    if (tgt) {
+      this.box3.setFromObject(tgt);
+      this.box3.getCenter(this.tmp);
+      this.tmp.y = this.box3.max.y;
+      this.site.root.worldToLocal(this.tmp);
+      if (this.arrow.parent !== this.site.root) this.site.root.add(this.arrow);
+      this.arrow.position.set(this.tmp.x, this.tmp.y + 0.9 + Math.abs(Math.sin(s.t * 4)) * 0.6, this.tmp.z);
+      this.arrow.rotation.y += dt * 2;
+    }
   }
+  setFocus(x, y, z) { this.focus.set(x, y + 1, z); }
 
-  // hook coordinates in crane polar form for a plot-local point
-  polarFor(local) {
-    const cp = this.crane.position.clone().sub(this.sites[this.session.i].g.position);
-    const dx = local.x - cp.x, dz = local.z - cp.z;
-    return { th: Math.atan2(dz, dx), r: Math.hypot(dx, dz) };
+  // ---------- sequences (short scripted animations) ----------
+  run(steps, done, block = true) { this.seqs.push({ steps, i: 0, t: 0, done, block }); }
+  updateSeqs(dt) {
+    for (const q of [...this.seqs]) {
+      let guard = 0;
+      while (q.i < q.steps.length && guard++ < 10) {
+        const st = q.steps[q.i];
+        if (q.t === 0 && st.start) st.start();
+        if (st.until) { if (!st.until()) { q.t += dt; break; } }
+        else {
+          q.t += dt;
+          const k = st.dur ? Math.min(1, q.t / st.dur) : 1;
+          st.fn?.(k);
+          if (k < 1) break;
+        }
+        st.end?.();
+        q.i++; q.t = 0;
+        dt = 0;
+      }
+      if (q.i >= q.steps.length) { this.seqs.splice(this.seqs.indexOf(q), 1); q.done?.(); }
+    }
   }
+  finishSeqs() {
+    let n = 0;
+    while (this.seqs.length && n++ < 50) {
+      const q = this.seqs[0];
+      for (; q.i < q.steps.length; q.i++) { const st = q.steps[q.i]; if (q.t === 0) st.start?.(); st.fn?.(1); st.end?.(); q.t = 0; }
+      this.seqs.shift();
+      q.done?.();
+    }
+  }
+  driveSteps(name, pts, speed, reverse) {
+    const o = this.m[name];
+    const steps = [];
+    for (let k = 1; k < pts.length; k++) {
+      const a = pts[k - 1], b = pts[k];
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (d < 0.05) continue;
+      const yaw = Math.atan2(b[0] - a[0], b[1] - a[1]) + (reverse ? Math.PI : 0);
+      steps.push({ dur: d / speed, start: () => { this.yaw0 = o.rotation.y; }, fn: (e) => {
+        o.position.set(lerp(a[0], b[0], e), o.position.y, lerp(a[1], b[1], e));
+        o.rotation.y = lerpAngle(this.yaw0, yaw, Math.min(1, e * 4));
+        for (const w of o.userData.wheels || []) w.rotation.x += (reverse ? -1 : 1) * 0.12;
+        this.engine(0.016);
+      } });
+    }
+    return steps;
+  }
+  engine(dt) { this._eng = (this._eng || 0) + dt; if (this._eng > 0.9) { this._eng = 0; this.audio.play('dig'); } }
 
-  craneAuto(dt, auto, site) {
-    const c = this.cr;
-    const moveTo = (th, r, h) => {
-      let dth = th - c.th;
-      while (dth > Math.PI) dth -= Math.PI * 2;
-      while (dth < -Math.PI) dth += Math.PI * 2;
-      c.th += clamp(dth, -0.7 * dt, 0.7 * dt);
-      c.r += clamp(r - c.r, -6 * dt, 6 * dt);
-      c.h += clamp(h - c.h, -5 * dt, 5 * dt);
-      return Math.abs(dth) < 0.01 && Math.abs(r - c.r) < 0.05 && Math.abs(h - c.h) < 0.05;
-    };
-    const safe = 15;
-    const avail = (this.craneParts || []).filter((p) => !p.placed);
-    if (!avail.length) { this.session.auto = null; return; }
-    if (auto.step === 0) { if (moveTo(c.th, c.r, safe)) auto.step = 1; }
-    else if (auto.step === 1) {
-      if (c.carrying) { auto.step = 3; return; }
-      const top = avail.reduce((a, b) => (a.obj.position.y > b.obj.position.y ? a : b));
-      const pol = this.polarFor(top.obj.position);
-      if (moveTo(pol.th, pol.r, safe)) auto.step = 2;
-    } else if (auto.step === 2) {
-      const top = avail.reduce((a, b) => (a.obj.position.y > b.obj.position.y ? a : b));
-      if (moveTo(c.th, c.r, top.obj.position.y + 1.2)) { this.craneGrab(); auto.step = 3; }
-    } else if (auto.step === 3) {
-      if (moveTo(c.th, c.r, safe)) auto.step = 4;
-    } else if (auto.step === 4) {
-      const d = c.carrying.def;
-      const pol = this.polarFor(new THREE.Vector3(...d.pos));
-      if (moveTo(pol.th, pol.r, safe)) auto.step = 5;
-    } else if (auto.step === 5) {
-      const d = c.carrying.def;
-      if (moveTo(c.th, c.r, d.pos[1] + c.carrying.hang + 0.6)) { this.craneGrab(); auto.step = 6; auto.t = 0.8; }
-    } else if (auto.step === 6) {
-      auto.t -= dt;
-      if (auto.t <= 0) this.session.auto = null;
+  // ---------- particles ----------
+  puff(pos, color, n = 3, size = 0.35) {
+    for (let k = 0; k < n; k++) {
+      const m = new THREE.Mesh(PUFF_GEO, new THREE.MeshStandardMaterial({ color, roughness: 1, transparent: true, opacity: 0.8, depthWrite: false }));
+      m.position.copy(pos).add(V3((Math.random() - 0.5) * 0.6, Math.random() * 0.3, (Math.random() - 0.5) * 0.6));
+      m.scale.setScalar(size);
+      this.site.root.add(m);
+      this.particles.push({ m, v: V3((Math.random() - 0.5) * 0.8, 0.6 + Math.random() * 0.8, (Math.random() - 0.5) * 0.8), life: 1.2 });
     }
   }
-
-  // ---------- small animation helpers ----------
-  animate(obj, dur, fn, done) { (this.anims ||= []).push({ t: 0, dur, fn, done }); }
-  updateAnims(dt) {
-    if (!this.anims) return;
-    for (const a of this.anims) {
-      a.t += dt;
-      const k = Math.min(1, a.t / a.dur);
-      a.fn(k);
-      if (k >= 1 && !a.finished) { a.finished = true; a.done && a.done(); }
-    }
-    this.anims = this.anims.filter((a) => !a.finished);
-    for (const p of this.particles) {
-      p.life -= dt;
-      p.mesh.position.addScaledVector(p.vel, dt);
-      p.vel.y -= 4 * dt;
-      p.mesh.material.opacity = Math.max(0, p.life);
-      if (p.life <= 0) this.game.scene.remove(p.mesh);
-    }
-    this.particles = this.particles.filter((p) => p.life > 0);
-  }
-  puff(pos, color, n = 1) {
-    const count = Math.round(8 * n);
-    for (let k = 0; k < count; k++) {
-      const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.25, 0), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 }));
+  confetti(pos) {
+    const cols = [0xff5a5f, 0xffc531, 0x3ec46d, 0x4aa8ff, 0xb46bff];
+    for (let k = 0; k < 60; k++) {
+      const m = new THREE.Mesh(CONF_GEO, new THREE.MeshBasicMaterial({ color: cols[k % 5], side: THREE.DoubleSide, transparent: true }));
       m.position.copy(pos);
-      this.game.scene.add(m);
-      this.particles.push({ mesh: m, vel: new THREE.Vector3((Math.random() - 0.5) * 4, 2 + Math.random() * 3, (Math.random() - 0.5) * 4), life: 0.9 });
+      this.site.root.add(m);
+      this.particles.push({ m, v: V3((Math.random() - 0.5) * 7, 4 + Math.random() * 5, (Math.random() - 0.5) * 7), life: 2.6, spin: true, grav: 6 });
     }
   }
+  updateParticles(dt) {
+    for (const p of [...this.particles]) {
+      p.life -= dt;
+      p.v.y -= (p.grav || 0) * dt;
+      p.m.position.addScaledVector(p.v, dt);
+      if (p.spin) { p.m.rotation.x += dt * 6; p.m.rotation.y += dt * 4; } else p.m.scale.multiplyScalar(1 + dt * 0.8);
+      p.m.material.opacity = Math.max(0, Math.min(1, p.life));
+      if (p.life <= 0) { p.m.parent?.remove(p.m); p.m.material.dispose(); this.particles.splice(this.particles.indexOf(p), 1); }
+    }
+  }
+  streamMesh() {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, 1, 8), V.mats().wet);
+    m.visible = false;
+    this.site.root.add(m);
+    return m;
+  }
+  toast(text, kind) { this.game.ui.toast(text, kind); }
 }
 
-const _padHoles = {};
-function makePadWithHole(PIT) {
-  const key = `${PIT.hx}:${PIT.hz}`;
-  if (_padHoles[key]) return _padHoles[key];
-  const sh = new THREE.Shape();
-  sh.moveTo(-12, -11); sh.lineTo(12, -11); sh.lineTo(12, 11); sh.lineTo(-12, 11); sh.closePath();
-  const h = new THREE.Path();
-  h.moveTo(-PIT.hx, -PIT.hz); h.lineTo(PIT.hx, -PIT.hz); h.lineTo(PIT.hx, PIT.hz); h.lineTo(-PIT.hx, PIT.hz); h.closePath();
-  sh.holes.push(h);
-  const g = new THREE.ShapeGeometry(sh);
-  g.rotateX(-Math.PI / 2);
-  g.translate(0, 0.06, 0);
-  _padHoles[key] = g;
-  return g;
+const PUFF_GEO = new THREE.SphereGeometry(1, 6, 5);
+const CONF_GEO = new THREE.PlaneGeometry(0.18, 0.1);
+
+function lerpAngle(a, b, k) { return a + angDiff(b, a) * k; }
+
+// place a unit-height cylinder between two site-local points (the mesh may sit inside a machine)
+function stretch(mesh, a, b, root) {
+  const parent = mesh.parent;
+  if (!parent) return;
+  const pa = a.clone(), pb = b.clone();
+  if (parent !== root) { root.localToWorld(pa); root.localToWorld(pb); parent.worldToLocal(pa); parent.worldToLocal(pb); }
+  const mid = pa.clone().add(pb).multiplyScalar(0.5);
+  const len = pa.distanceTo(pb);
+  mesh.position.copy(mid);
+  mesh.scale.set(1, Math.max(0.01, len), 1);
+  mesh.quaternion.setFromUnitVectors(V3(0, 1, 0), pb.clone().sub(pa).normalize());
+}
+
+function label(text) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ff5a1f'; ctx.beginPath(); ctx.arc(32, 32, 28, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 38px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, 32, 34);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false }));
+  sp.scale.set(0.9, 0.9, 1);
+  return sp;
+}
+
+// a family member: same body as a worker, everyday clothes and no hard hat
+function civilian(w, k) {
+  const shirts = [0x2e86de, 0xe84393, 0x20bf6b];
+  w.children[2].material = new THREE.MeshStandardMaterial({ color: shirts[k % 3], roughness: 0.8 });
+  w.children[3].visible = false;
+  w.children[7].visible = false; w.children[8].visible = false;
+  if (k === 2) w.scale.setScalar(0.65);
+  w.visible = false;
+  return w;
 }

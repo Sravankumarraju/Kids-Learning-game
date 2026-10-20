@@ -223,6 +223,7 @@ export class GameAudio {
       case 'hiss': this.burst(5000, 0.5, 0.25, 0.9, this.trainBus || this.sfx, t); break;
       case 'rustle': for (let i = 0; i < 5; i++) this.burst(3000 + Math.random() * 2000, 1, 0.1, 0.12, this.sfx, t + i * 0.06); break;
       case 'dig': this.burst(300, 0.7, 0.4, 0.4, this.sfx, t); this.tone(60, 'sine', 0.3, 0.3, this.sfx, t); break;
+      case 'beep': this.tone(415, 'square', 0.05, 0.12, this.sfx, t); this.tone(415, 'square', 0.05, 0.16, this.sfx, t + 0.18); break;
       case 'error': this.tone(220, 'square', 0.06, 0.15, this.sfx, t); this.tone(180, 'square', 0.06, 0.2, this.sfx, t + 0.12); break;
       case 'fanfare': [523, 659, 784, 1046, 784, 1046].forEach((f, i) => this.tone(f, 'triangle', 0.14, 0.35, this.sfx, t + i * 0.13)); break;
     }

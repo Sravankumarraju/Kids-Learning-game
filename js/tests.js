@@ -1,6 +1,6 @@
 // Rule tests. Run in Node:  node js/tests.js   (or open index.html?selftest=1 to see results in the browser console)
 import * as L from './logic.js';
-import { STAGES, STORY_MISSIONS, TRUCK_CAPACITY } from './data.js';
+import { STAGES, STORY_MISSIONS, TRUCK_CAPACITY, STAGE_ROOF, STAGE_COLUMNS, PASSENGER_LEVELS } from './data.js';
 
 const results = [];
 function check(name, cond) { results.push({ name, ok: !!cond }); }
@@ -46,7 +46,7 @@ export function runTests() {
   check('m5 delivers tiles, glass, paint', r5 && s.warehouse.tiles === 8 && s.warehouse.glass === 4 && s.warehouse.paint === 4);
   // --- unlocks ---
   let u = L.newState();
-  u.rules.realMaterials = true; u.plots[1].unlocked = false; u.plots[2].unlocked = false;
+  u.rules.realMaterials = true;
   for (const m of STORY_MISSIONS.slice(0, 3)) { L.startMission(u, m.id); for (const st of m.stops) L.doLoad(u, st.st); L.doUnload(u, m.dest); }
   check('car unlocked after 2 deliveries', u.unlocks.car);
   const c = u.coins;
@@ -71,24 +71,34 @@ export function runTests() {
   const p = u.plots[0];
   check('clear stage needs nothing', L.canWorkStage(p, 0));
   check('cannot skip stages', L.completeStage(u, 0, 2) === null);
-  L.completeStage(u, 0, 0); L.completeStage(u, 0, 1);
+  for (const k in p.site) p.site[k] = 0;
+  p.site.cement = 6; p.site.timber = 1;
+  L.completeStage(u, 0, 0); L.completeStage(u, 0, 1); L.completeStage(u, 0, 2); L.completeStage(u, 0, 3);
   const cem = p.site.cement;
-  const rc = L.completeStage(u, 0, 2);
-  check('concrete consumes 4 cement', rc && p.site.cement === cem - 4);
-  check('stage cannot be completed twice', L.completeStage(u, 0, 2) === null && p.site.cement === cem - 4);
-  p.site.bricks = 3;
-  check('walls blocked without enough bricks', !L.canWorkStage(p, 3) && L.completeStage(u, 0, 3) === null && p.site.bricks === 3);
+  const rc = L.completeStage(u, 0, 4);
+  check('footing concrete consumes 3 cement', rc && p.site.cement === cem - 3);
+  check('stage cannot be completed twice', L.completeStage(u, 0, 4) === null && p.site.cement === cem - 3);
+  p.site.bricks = 1;
+  check('plinth blocked without enough bricks', !L.canWorkStage(p, 5) && L.completeStage(u, 0, 5) === null && p.site.bricks === 1);
   // finish the house
   for (const k in p.site) p.site[k] = 50;
   const coinsB = u.coins;
-  for (let i = 3; i < STAGES.length; i++) L.completeStage(u, 0, i);
+  check('plot 2 locked before house 1 is done', !u.plots[1].unlocked);
+  for (let i = 5; i < STAGES.length; i++) L.completeStage(u, 0, i);
   check('house complete', p.done && u.housesBuilt === 1 && u.coins === coinsB + 300);
-  check('house reward once', L.completeStage(u, 0, 7) === null && u.coins === coinsB + 300);
-  check('plot 2 can be bought after house 1', L.canBuyPlot(u, 1));
+  check('house reward once', L.completeStage(u, 0, STAGES.length - 1) === null && u.coins === coinsB + 300);
+  check('finishing a building opens the next project', u.plots[1].unlocked && !u.plots[2].unlocked);
+  // two storeys: columns, walls and roof repeat once
+  const two = L.newState();
+  two.plots[0].floors = 2;
+  for (let i = 0; i <= STAGE_ROOF; i++) L.completeStage(two, 0, i);
+  check('second floor goes back to columns', two.plots[0].floor === 1 && two.plots[0].stage === STAGE_COLUMNS);
+  for (let i = STAGE_COLUMNS; i < STAGES.length; i++) L.completeStage(two, 0, i);
+  check('two-storey building completes after the second floor', two.plots[0].done && two.housesBuilt === 1);
   // --- free-build mode ---
   const fb = L.newState();
-  check('free build: all plots open', fb.plots.every((p) => p.unlocked) && fb.unlocks.car && fb.unlocks.truck);
-  for (let i = 0; i < 8; i++) L.completeStage(fb, 0, i);
+  check('free build: first project open, the rest wait their turn', fb.plots[0].unlocked && !fb.plots[1].unlocked && fb.plots.length === 10);
+  for (let i = 0; i < STAGES.length; i++) L.completeStage(fb, 0, i);
   check('free build: house completes with no materials and stock never negative', fb.plots[0].done && Object.values(fb.plots[0].site).every((v) => v === 0));
   // --- save / load ---
   const store = memStore();
@@ -97,9 +107,21 @@ export function runTests() {
   check('save/load round trip', back && back.coins === u.coins && back.plots[0].done && back.warehouse.timber === u.warehouse.timber);
   store.setItem(L.SAVE_KEY, JSON.stringify({ version: 1, coins: 77, warehouse: { timber: -5 }, vehicles: { truck: { cargo: { bricks: 4 } } } }));
   const old = L.load(store);
-  check('v1 save migrates and keeps progress', old.coins === 77 && old.vehicles.truckCargo.bricks === 4 && old.warehouse.timber === 0 && old.plots.length === 3 && old.plots.every((p) => p.unlocked));
+  check('v1 save migrates and keeps progress', old.coins === 77 && old.vehicles.truckCargo.bricks === 4 && old.warehouse.timber === 0 && old.plots.length === 10 && old.plots[0].unlocked && !old.plots[1].unlocked);
   store.setItem(L.SAVE_KEY, '{broken');
   check('corrupt save does not crash', L.load(store) === null);
+  // ten levels everywhere
+  check('10 goods train levels, numbered 1..10', STORY_MISSIONS.length === 10 && STORY_MISSIONS.every((m, i) => m.level === i + 1));
+  check('goods levels pay more as they get harder', STORY_MISSIONS.every((m, i) => i === 0 || m.coins >= STORY_MISSIONS[i - 1].coins));
+  check('10 passenger levels with rising targets', PASSENGER_LEVELS.length === 10 && PASSENGER_LEVELS.every((l, i) => i === 0 || l.need > PASSENGER_LEVELS[i - 1].need));
+  const lv = L.newState();
+  for (const m of STORY_MISSIONS) { const ok = L.startMission(lv, m.id).ok; for (const st of m.stops) L.doLoad(lv, st.st); if (!ok || !L.doUnload(lv, m.dest)) break; }
+  check('all 10 goods levels can be played in order', STORY_MISSIONS.every((m) => lv.missions.completed.includes(m.id)));
+  check('ten building projects, the next opening after each', (() => {
+    const b = L.newState();
+    for (let p = 0; p < 10; p++) { if (!b.plots[p].unlocked) return false; b.plots[p].floors = p % 3 === 1 ? 2 : 1; for (let k = 0; k < 40 && !b.plots[p].done; k++) L.completeStage(b, p, b.plots[p].stage); if (!b.plots[p].done) return false; }
+    return b.housesBuilt === 10;
+  })());
   return results;
 }
 

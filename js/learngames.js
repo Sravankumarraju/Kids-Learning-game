@@ -151,7 +151,7 @@ export const GAMES = [
         ctx.stage.append(train, opts);
         return;
       }
-      const max = level === 1 ? 10 : 26;
+      const max = Math.max(8, Math.min(26, Math.round(8 + 18 * (ctx.span ?? (level - 1) / 2))));
       const start = Math.floor(r() * (max - 3));
       const seq = A.slice(start, start + 4).split('');
       const gap = level === 1 ? 3 : 1 + Math.floor(r() * 3);
@@ -169,7 +169,7 @@ export const GAMES = [
       const { r, level } = ctx;
       const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
       const tricky = { b: ['d', 'p', 'q'], d: ['b', 'p', 'q'], p: ['q', 'b', 'd'], q: ['p', 'd', 'b'], m: ['n', 'w', 'u'], n: ['m', 'u', 'h'], u: ['n', 'v', 'w'], i: ['l', 'j', 't'] };
-      const pool = level === 1 ? A.slice(0, 13) : A;
+      const pool = A.slice(0, Math.max(8, Math.min(26, Math.round(8 + 18 * (ctx.span ?? (level - 1) / 2)))));
       const L = level >= 3 && r() < 0.6 ? pick(r, Object.keys(tricky)).toUpperCase() : pick(r, pool);
       const small = L.toLowerCase();
       const upToLow = level !== 2 || r() < 0.5;

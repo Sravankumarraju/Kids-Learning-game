@@ -1,14 +1,14 @@
 # Build My Town: Indian Railway Adventure
 
-A 3D browser game built with Three.js. You drive an electric freight train round a fictional loop line, bring building materials to the town of Mitrapur, then use a car, a delivery truck and construction machines to build houses. Each finished house makes the town grow.
+A 3D browser game built with Three.js for children aged 3–10. Drive trains, cars and big machines, build ten real buildings stage by stage, watch the town of Mitrapur come alive, and play learning games — in a realistic 3D world with HDR sky lighting, real-world (CC0) textures, a day and night cycle, traffic and people.
 
-**How it plays:** you type your name once, then a home hub opens. Trains, vehicles and buildings are all open from the start; nothing is locked. The Station Master guide bubble talks to you by name and tells you the next step.
+**How it plays:** you type your name once, take a short tour, then a home hub opens with four activities. Everything is open from the start, and **every activity has 10 levels** — finish one to open the next. The Station Master guide talks to you by name and a yellow arrow shows where to go.
 
-- **Trains (4):** goods freight, passenger express, local shuttle (EMU) and heritage steam. Choose the paint scheme and the number of coaches. Passenger trains pick people up at each stop: tap **Open the doors**, watch passengers walk on and off, and earn fares.
-- **Vehicles (5):** hatchback, jeep, auto-rickshaw, delivery truck and tractor, each in 5 colours.
-- **Buildings (4):** house, corner shop, village school and health clinic. Choose clay-tile, tin-sheet or flat-terrace roof, a wall colour and a plot. Free-build is the default. Turn on **Real materials** to make buildings need goods delivered by train and truck.
-- **Stops are forgiving:** anywhere from 30 m short to 60 m past the marker counts. If you overshoot further, tap **Move to the platform** and assist backs the train up.
-- **Learning Games (Batch 1, ages 3–10):** Colour Station, Shape Sorter Yard, Alphabet Express, Big & Small Letters, Number Train, Count & Load, Count the Passengers, Signal Says and Cargo Memory. Open them from the 🧩 card on the home hub, or accept an offer that pops up at stations and building sites. Each game is 5 rounds. Instructions are spoken aloud, the right answer glows after a wrong try, and stars earn coins. Difficulty starts from the age chosen on the name screen and moves up or down with the child's answers. **👪 Grown-ups** (behind a sum) shows skill meters, letters and numbers learned, time played, play-together ideas and a break reminder setting.
+- **Trains (4):** goods freight, passenger express, local shuttle (EMU) and heritage steam, with paint schemes and coach counts. **10 goods levels** (from one-stop timber runs to a four-station Grand Supply Tour) and **10 passenger levels** (bonus coins as you carry more passengers). Stops are forgiving: 30 m short to 60 m past the marker counts, and **Move to the platform** backs up if you overshoot.
+- **Vehicles (5):** hatchback, SUV, auto-rickshaw, goods truck and tractor, with clear-coat paint, tinted glass, alloy wheels, Indian number plates and lights that glow at night. **10 driving challenges** with glowing checkpoints, a timer and stars: Market Day, Around the Block, Station Pick-up, Warehouse Run, Village Visit, Town Time Trial, Farm Road, Night Patrol, Railway Crossing and the Grand Tour.
+- **Buildings (10 projects × 12 real stages):** Family House, Corner Shop, Village School, Health Clinic, Two-Storey Home, Post Office, Police Station, Library, Bus Station and Town Hall. Each opens after the one before it. See *Construction* below.
+- **Learning Games:** Colour Station, Shape Sorter Yard, Alphabet Express, Big & Small Letters, Number Train, Count & Load, Count the Passengers, Signal Says and Cargo Memory — **each with 10 stages** (90 in all) that add rounds, widen the letters and numbers used and get harder. Instructions are spoken aloud, the right answer glows after a wrong try, and stars earn coins. **👪 Grown-ups** (behind a sum) shows skill meters, time played, play-together ideas and a break reminder.
+- **Town life:** cars, autos, trucks and tractors drive round the town on the left, keep their distance and stop (with a toot) for you; people walk the footpaths; cows rest by the road.
 
 The stations, the route and the town are fictional. They are inspired by Indian railways but are not a real place or a real railway line.
 
@@ -40,11 +40,10 @@ node js/tests.js
 |---|---|---|
 | **Train** | W/S or ↑/↓ throttle · Space brake (hold) · R forward/reverse (only when stopped) · H horn · L headlights · P driving assist | Throttle slider, BRAKE, FWD/REV, Assist, horn and light buttons |
 | **Car / truck** | W/A/S/D or arrows · Space brake · H horn · R recover | ◀ ▶ steering, GO, BRAKE/REV, Recover |
-| **Excavator** | A/D swing · W/S boom · Q/E arm · R/F dig/dump | On-screen pad |
-| **Crane** | A/D turn · W/S trolley · Q/E hook up/down · Space grab/release | On-screen pad |
+| **Building site** | Space: the big action (hold for DIG / POUR / LAY BRICKS…) | Big round action button (hold or tap) · tap glowing targets · swipe walls to plaster and paint · 🤝 Help me |
 | **Everywhere** | E or Enter: context action · C camera picker (then 1–6 or arrow keys + Enter) · 1–6 switch view directly · O panels · M map · U scenic mode · Esc closes things | Buttons in the top-right corner. In scenic mode, "Show controls" brings them back |
 
-On the building site, drag to orbit and scroll or pinch to zoom. **Helper mode** (Settings, on by default) turns on "do it for me" buttons for younger players. **Faster journeys** (Settings) runs the simulation at 2× speed.
+On the building site, drag to orbit and scroll or pinch to zoom; the camera follows the work. A bouncing arrow points at the next thing to tap. **Faster journeys** (Settings) runs the simulation at 2× speed.
 
 ## What's in it
 
@@ -66,15 +65,11 @@ On the building site, drag to orbit and scroll or pinch to zoom. **Helper mode**
 
 It pulls six open goods wagons, and cargo shows on the wagons (logs, brick pallets, cement bags, crates, tiles, glass crates, paint drums, saplings). Each car's position is taken from two bogie points along the track, so spacing stays the same on curves. Acceleration has a power limit, there's rolling resistance and a gentle effect from gradients. Braking is forgiving.
 
-**Missions.** There are five story missions:
+**Missions.** Ten goods levels, played in order (the Missions panel shows the ladder):
 
-1. Timber from Vanagiri
-2. Bricks from the Itkheda depot
-3. Cement from Shilapur
-4. Farm produce and saplings from Dhanpur
-5. A multi-stop run: tiles at Itkheda, then glass and paint at Rangpura
+1. Timber from the Forest · 2. Bricks from Itkheda · 3. Cement for the Town · 4. Farm Fresh Delivery · 5. Roof & Windows (2 stops) · 6. Glass for the Clinic · 7. Flowers and Farm Goods (2 stops) · 8. The Big Cement Order (2 stops) · 9. Hill Timber Run (2 stops) · 10. Grand Supply Tour (4 stops)
 
-After those, repeatable supply runs appear. You can only load at the right station while stopped in the green stop zone, and only unload at the destination. Each mission's reward is paid once.
+After those, repeatable supply runs appear. You can only load at the right station while stopped in the green stop zone, and only unload at the destination. Each reward is paid once.
 
 **Cameras.** There are six train views:
 
@@ -98,29 +93,38 @@ The side views move in and out so the whole train fits. Switching views uses a s
 - the panels button
 - the scenic-mode button
 
-**Construction.** A house is built in 8 stages:
+**Construction.** Every project is built the way real buildings are, in 12 stages. Columns, walls and the slab repeat for every floor of the two-storey buildings. Each stage opens with a short **lesson card** (a real fact — a different one for each project) and a **method choice** (a wrong choice is explained kindly and the crew does it the right way, for one star less). Then you do the work with real machines and a site crew:
 
-1. Clear the plot: tap debris.
-2. Excavate: drive the excavator arm and bucket and dig 4 scoops.
-3. Pour concrete: hold to pour from the mixer.
-4. Build walls: lift 4 wall panels with the crane and set them on the outlines, where they snap into place.
-5. Fit the roof: same as the walls, with 2 roof halves.
-6. Doors and windows: choose a part, then tap its opening.
-7. Paint: pick from 6 colours and paint each wall.
-8. Garden: fence, path and saplings.
+| # | Stage | What you do | Machines |
+|---|---|---|---|
+| 1 | Survey and mark out | Tap the corner pegs 1→4; strings and a chalk outline appear | Surveyor's tripod |
+| 2 | Clear the site | Hold PUSH to drive the bulldozer lane by lane, or tap rubbish for the workers | Bulldozer |
+| 3 | Dig the trenches | Hold DIG and let go in the green zone (1 m deep); spoil goes in heaps | Excavator or JCB backhoe, tipper |
+| 4 | Steel reinforcement | Tap each trench to lower a rebar cage | Crew |
+| 5 | Concrete footing | Choose the mix (1:2:4), hold POUR to the green line | Transit mixer |
+| 6 | Plinth and DPC | Raise the brick plinth, roll the backfill, lay the damp-proof course | Road roller |
+| 7 | Columns | Tap each column; the pump boom swings over and fills the shuttering; cure 7 days; strip the boxes | Concrete pump, tower crane |
+| 8 | Brick walls | Hold LAY BRICKS (thousands of bricks, row by row, lintels over openings); spirit-level checks | Tower crane, crew |
+| 9 | Slab and roof | Props and deck → steel mesh → pour; or gables → crane-lifted trusses → tiles / metal sheets | Pump, crane |
+| 10 | Doors, windows, wiring | Tap each opening; answer a wiring or plumbing question | Crew |
+| 11 | Plaster and paint | Swipe across the walls to plaster, then pick a colour and swipe to paint | Crew |
+| 12 | Floors, garden, handover | Choose floor tiles, plant the garden, the inspector checks, the family moves in | Inspector, family |
 
-Each stage uses specific materials from the plot's stock, and they are taken exactly once:
+Every stage earns 1–3 stars; **🤝 Help me** finishes the step for younger players (two stars at most). A day counter and quick time-lapses show how long real building takes. In **Real materials** mode each stage also uses goods brought by train and truck:
 
 | Stage | Materials used |
 |---|---|
-| Concrete | 4 cement |
-| Walls | 8 bricks, 2 cement |
-| Roof | 3 timber, 4 tiles |
+| Steel | 1 timber |
+| Footing | 3 cement |
+| Plinth | 2 bricks, 1 cement |
+| Columns (each floor) | 2 cement, 1 timber |
+| Walls (each floor) | 8 bricks, 2 cement |
+| Slab and roof (each floor) | 2 timber, 3 tiles |
 | Doors and windows | 2 timber, 2 glass |
-| Paint | 2 paint |
-| Garden | 3 saplings, 1 timber |
+| Plaster and paint | 2 paint, 1 cement |
+| Handover | 3 saplings |
 
-Finished houses stay in the world. Each one pays 300 coins, lets you buy the next plot, and adds to the town: street lamps and a bus stop, then a school, then a park with a fountain and a town hall.
+Finished buildings stay in the town with their garden, boundary wall and name board. Each pays coins (more for later projects) and opens the next project.
 
 **Sound.** All sound is generated with Web Audio and starts after your first click. It includes:
 
@@ -136,7 +140,7 @@ Finished houses stay in the world. Each one pays 300 coins, lets you buy the nex
 
 Music and sound effects have separate volume controls. Nothing important is communicated by sound alone.
 
-**Saving.** The game saves automatically to `localStorage`, every 15 seconds and after each important event. The save format has a version number (currently 2) and is migrated forward when the format changes. Values are cleaned on load so stock can never go negative, and duplicate entries are removed. Resetting progress asks you to confirm. There are no ads, purchases, chat or accounts, and no personal data is collected.
+**Saving.** The game saves automatically to `localStorage`, every 15 seconds and after each important event. The save format has a version number (currently 4) and is migrated forward when the format changes. Values are cleaned on load so stock can never go negative, and duplicate entries are removed. Resetting progress asks you to confirm. There are no ads, purchases, chat or accounts, and no personal data is collected.
 
 **Graphics settings.** Low, Medium and High change pixel ratio, shadow-map size, tree density and draw distance. Shadows can be switched on or off. Touch devices start on Low.
 
@@ -144,59 +148,68 @@ Music and sound effects have separate volume controls. Nothing important is comm
 
 ```
 index.html          HUD markup, import map for the bundled Three.js
-css/style.css       interface styling (desktop and phone layouts)
+css/style.css       interface styling (desktop, tablet and phone layouts)
 js/main.js          start-up, game modes, objectives, actions, input, main loop
-js/logic.js         the game rules with no rendering (missions, inventory, unlocks, construction, save/migrate)
-js/data.js          stations, cargo, missions, construction stages
-js/track.js         loop line measured by distance along it, nearest-point lookups, swept track geometry
-js/terrain.js       height map: hills, river, flattened town and track bed, regional ground colours
-js/world.js         ballast, sleepers, rails, overhead wires, stations, signals, bridges, river, roads, level crossings
-js/scenery.js       instanced trees, palms, paddy fields, villages, kilns, silos, factories, distance-based detail
-js/town.js          Mitrapur layout, warehouse and stock piles, garage, plots, town expansion
+js/logic.js         game rules with no rendering (missions, inventory, construction stages and floors, save/migrate)
+js/data.js          stations, cargo, 10 goods levels, passenger levels, construction stages
+js/assets.js        CC0 textures, HDR sky and glTF props
+js/daynight.js      sun, sky, lights and clock for the day and night cycle
+js/track.js         loop line measured by distance, nearest-point lookups, swept track geometry
+js/terrain.js       height map, textured ground blend, holes for foundation trenches
+js/world.js         ballast, rails, overhead wires, stations, signals, bridges, river, roads, level crossings
+js/scenery.js       instanced trees, palms, paddy fields, villages, kilns, silos, factories
+js/town.js          Mitrapur layout, footpaths, warehouse, garage, 10 building plots, town expansion
 js/train.js         train physics, placing cars on the track, assisted driving
-js/vehicles.js      car and truck handling, collisions, getting stuck, recovery
-js/construction.js  building stages, excavator, mixer, crane, snapping, painting, garden
+js/vehicles.js      vehicle handling, collisions, recovery
+js/cars.js          realistic vehicle models (hatchback, SUV, auto-rickshaw, truck, tractor)
+js/traffic.js       town traffic, pedestrians and cows
+js/challenges.js    10 driving challenges with checkpoints and stars
+js/buildgeo.js      the 10 building projects: layouts, openings, brick courses, plaster masks
+js/sitevis.js       what a site looks like at every stage (trenches, steel, concrete, bricks, roofs, garden)
+js/machines.js      bulldozer, excavator, backhoe, tipper, transit mixer, pump, roller, workers
+js/construction.js  the real-time construction stages: lessons, choices, work, stars, time-lapse
+js/lessons.js       stage facts, method choices and quiz questions
+js/learn.js, js/learngames.js   learning games with 10 stages each, parent page
 js/cameras.js       camera views, transitions, keeping clear of obstacles
 js/audio.js         generated sound
-js/ui.js            panels, camera picker, scenic mode, dialogs, construction panel
+js/ui.js            home hub, tour, pickers, panels, construction card and action button
 js/tests.js         rule tests (Node or ?selftest)
-vendor/             three.module.js r160 and its MIT licence
+tools/              fetch_assets.py (downloads the CC0 assets), sitetest.js (plays a project through)
+assets/             CC0 textures, HDR sky and models (see assets/CREDITS.md)
+vendor/             three.module.js r160 + addons, MIT licence
 serve.py            local server with caching turned off
 ```
 
 ## Credits and licences
 
-- **Three.js r160**, © 2010–2023 three.js authors, MIT licence (`vendor/THREE_LICENSE.txt`).
-- Everything else was written for this project: models, textures, terrain, sounds, music and code. No outside images, models, fonts or audio are used. Station boards use the system font, such as Nirmala UI or Noto Sans Devanagari.
+- **Three.js r160** and its addons, © 2010–2023 three.js authors, MIT licence (`vendor/THREE_LICENSE.txt`).
+- **Textures, HDR sky and props** from [Poly Haven](https://polyhaven.com) and [ambientCG](https://ambientcg.com), all **CC0** (public domain). The full list is in `assets/CREDITS.md`.
+- Everything else — vehicles, machines, buildings, terrain, sounds, music and code — was written for this project. Station boards use the system font, such as Nirmala UI or Noto Sans Devanagari.
 
 ## Verification results
 
-These were run in the Claude desktop app's built-in Chromium browser, using the dev server above.
+Run in the Claude desktop app's built-in Chromium browser with the dev server above, plus Node and a jsdom harness.
 
 | Check | How it was checked | Result |
 |---|---|---|
-| Game rules: loading only at the right station, correct destinations, reward paid once, no negative stock, materials used once per stage, save/migrate, corrupt save | 45 automated tests, in Node and in the browser (`?selftest=1`) | 45/45 pass |
-| Wagon spacing on curves | Train placed every 25 m round the whole loop; gap between coupler faces measured | 0–0.08 m everywhere; tightest curve radius 381 m |
-| Assisted stopping | Simulation run in the browser with Assist on, Mitrapur → Vanagiri → Mitrapur | Stopped 1.1 m from the marker both times; about 4 min 50 s and 5 min 30 s per leg |
-| Full delivery | Same run: Load, then pressing Unload twice | 6 wagons showed timber; warehouse +12 timber; +150 coins once; next mission started |
-| Car/truck → construction | Truck driven by the real vehicle physics: loading bay → Plot 1 → unload → all 8 stages with Helper mode | House finished; consumption matched the stage table; +300 coins once; town expansion 1 shown; Plot 2 offered |
-| Save/reload | Reload, then Continue | Coins, finished house, expansion, vehicles, warehouse and mission state all restored |
-| Interface | Real clicks and key presses | Start-new confirmation; panels and Garage; switching vehicles; camera picker opened, moved with arrow keys + Enter, closed and returned focus; tapping debris; scenic mode on and off; panel preference kept |
-| Level crossings | Gate state sampled as the train approached and passed | Closed from about 520 m before the crossing until the tail cleared; car-blocking active only while the gates are down |
-| Phone layout | 375×812 emulation | HUD and construction panel fit after a fix |
+| Game rules, incl. 12-stage construction, two-storey floors, 10 goods levels, 10 projects in order | 53 automated tests (`node js/tests.js`, or `?selftest=1`) | 53/53 pass |
+| Construction, every stage | `tools/sitetest.js` played the Family House, Corner Shop and Town Hall (2 floors) through all stages in the browser | All completed, no errors; floor 2 repeated columns → walls → slab |
+| Real interactions | Pegs tapped in order (wrong order loses a star), bulldozer held lane by lane, dig released in the green zone, spirit-level check, swipe plastering and painting by ray-cast | All worked |
+| Driving challenges | Challenge 1 played through; every checkpoint of all 10 checked against the road network | Stars, coins and next level unlocked; checkpoints on roads (the loading bay is a paved yard beside the service road) |
+| Learning games | jsdom harness: all 9 games at stages 1, 4 and 10 | All finish with 3 stars when answered right; wrong answers glow a hint; signal game at stage 10 is long (8 rounds) |
+| Phone and tablet | 375×812 and 768×1024 emulation | Stage card and big action button do not overlap |
 
 **Limits of this testing:**
 
-- The browser pane was often in the background, which slows its drawing. Many long checks were done by stepping the simulation from the console rather than playing in real time.
-- Frame rate was only seen in that pane: about 20–28 fps at Medium with 0.3–1.3 M triangles. That is **not** a real performance measurement. Real phones, Safari and Firefox were not tested.
-- Sound was confirmed to start (the Web Audio context is running), but nobody listened to it.
+- The browser pane was mostly hidden, so frames were stepped from the console; no real frame-rate measurement was possible. Real phones, Safari and Firefox were not tested.
+- Rendering load with the town in view: about 140 draw calls and 0.6 M triangles on Medium.
+- Sound was not listened to.
 
 ## Known limitations
 
-- Everything is procedural and low-poly. It is a clean stylised look, not photorealistic. The locomotive and wagons have no detailed interiors; the cab view uses a simple desk and window frame.
-- The line is a single loop with no points, sidings or other trains. Goods are loaded beside the platform, not in a separate siding.
-- In the right-side view at stations, the platform shelters hide part of the train. The default left-side view stays clear.
-- Car and truck handling is arcade-style, and there is no other traffic. Getting stuck is detected and **Recover** fixes it.
-- It is always daytime; there is no weather.
+- Vehicles, machines and buildings are procedural models with real-world textures and physically based materials — realistic in look, but not scanned or photoreal.
+- The line is a single loop with no points, sidings or other trains.
+- Vehicle handling is arcade-style. AI traffic stays on the town loop roads; it does not go out to the villages.
+- Walking people and cows are simple animated figures.
 - Hindi board text needs a Devanagari font on the device. Most systems have one; if not, the browser will substitute a fallback.
-- Loading takes about 4 seconds on a desktop because the world is generated on the device.
+- Loading takes a few seconds on a desktop: the world is generated on the device and about 55 MB of textures and sky are downloaded the first time.
